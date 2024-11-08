@@ -1,0 +1,125 @@
+"""
+Author: Y. Ahmed-Braimah
+--- Snakemake workflow for KrakenUniq
+"""
+
+import json
+import os
+import re
+from os.path import join, basename, dirname
+from os import getcwd
+from subprocess import check_output
+
+##--------------------------------------------------------------------------------------##
+## Functions
+##--------------------------------------------------------------------------------------##
+
+# To print process messages
+def message(x):
+  print()
+
+# To remove suffix from a string
+def rstrip(text, suffix):
+    if not text.endswith(suffix):
+        return text
+    return text[:len(text)-len(suffix)]
+
+##--------------------------------------------------------------------------------------##
+## Global config files:
+##--------------------------------------------------------------------------------------##
+
+configfile: 'config.yml'
+
+# Full path to an uncompressed FASTA file with all chromosome sequences.
+kraken_db = config['kraken_db']
+
+# Full path to a folder where final output files will be deposited.
+OUT_DIR = config['OUT_DIR']
+
+# Samples and their corresponding filenames.
+# single-end
+seFILES = json.load(open(config['SE_SAMPLES_JSON']))
+seSAMPLES = sorted(seFILES.keys())
+# paired-end:
+peFILES = json.load(open(config['PE_SAMPLES_JSON']))
+peSAMPLES = sorted(peFILES.keys())
+
+# read both
+# FILES = json.load(open(config['SAMPLES_JSON']))
+combinedSam = [peSAMPLES, seSAMPLES]
+SAMPLES = [y for x in combinedSam for y in x]
+
+
+## Create the final output directory if it doesn't already exist
+if not os.path.exists(OUT_DIR):
+            os.makedirs(OUT_DIR)
+
+
+## Final expected output(s)
+rule all:
+    input:
+        expand(join(OUT_DIR, 'KrakenResult', '{sample}', '{sample}.report'), sample = SAMPLES)
+
+
+## Rule to map PE reads with HISAT2
+rule krakenUniq_se:
+    input:
+        r1 = lambda wildcards: seFILES[wildcards.sample]['R1']
+    params:
+        index = kraken_db
+    output:
+        classified = join(OUT_DIR, 'KrakenResult', '{sample}', '{sample}.classified'),
+        unclassified = join(OUT_DIR, 'KrakenResult', '{sample}', '{sample}.unclassified'),
+        report = join(OUT_DIR, 'KrakenResult', '{sample}', '{sample}.report')
+    log:
+        join(OUT_DIR, 'KrakenResult', '{sample}', '{sample}.ku.log')
+    benchmark:
+        join(OUT_DIR, 'KrakenResult', '{sample}', '{sample}.ku.benchmark.tsv')
+    threads:
+        16
+    resources:
+        mem_mb=32000
+    message:
+        """--- generating KrakenUniq report for {wildcards.sample} """
+    run:
+        shell('krakenuniq '
+                ' -db {params.index}'
+                ' --threads 16'
+                ' --gzip-compressed'
+                ' --fastq-input {input.r1}'
+                ' --unclassified-out {output.unclasified}'
+                ' --classified-out {output.clasified}'
+                ' --output {output.report}'
+                ' 2>{log}')
+
+
+## Rule to search with Kraken with paired-end data
+rule krakenUniq_pe:
+    input:
+        r1 = lambda wildcards: peFILES[wildcards.sample]['R1'],
+        r2 = lambda wildcards: peFILES[wildcards.sample]['R2']
+    params:
+        index = kraken_db
+    output:
+        classified = join(OUT_DIR, 'KrakenResult', '{sample}', '{sample}.classified'),
+        unclassified = join(OUT_DIR, 'KrakenResult', '{sample}', '{sample}.unclassified'),
+        report = join(OUT_DIR, 'KrakenResult', '{sample}', '{sample}.report')
+    log:
+        join(OUT_DIR, 'KrakenResult', '{sample}', '{sample}.ku.log')
+    benchmark:
+        join(OUT_DIR, 'KrakenResult', '{sample}', '{sample}.ku.benchmark.tsv')
+    threads:
+        8
+    resources:
+        mem_mb=16000
+    message:
+        """--- generating KrakenUniq report for {wildcards.sample} """
+    run:
+        shell('krakenuniq '
+                ' -db {params.index}'
+                ' --threads 8'
+                ' --gzip-compressed'
+                ' --fastq-input {input.r1} {input.r2}'
+                ' --unclassified-out {output.unclasified}'
+                ' --classified-out {output.clasified}'
+                ' --output {output.report}')

@@ -1,0 +1,10 @@
+# Path to PacBio assemblies and their HISAT indices.
+kraken_db: '/home/yahmed/Kraken/krakenDB'
+
+
+# Path to a folder where final files will be written.
+OUT_DIR: '/home/yahmed/Kraken/OUTPUT'
+
+# Path to a JSON file with samples and their corresponding FASTQ files.
+SE_SAMPLES_JSON: '/home/yahmed/Kraken/samples_se.json'
+PE_SAMPLES_JSON: '/home/yahmed/Kraken/samples_pe.json'

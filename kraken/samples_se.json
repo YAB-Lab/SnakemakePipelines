@@ -1,0 +1,82 @@
+{
+    "americana_AG_2": {
+        "R1": [
+            "/home/labshare/RNAseq_reads/americana_AG_2.R1.fq.gz"
+        ]
+    },
+    "americana_AG_3": {
+        "R1": [
+            "/home/labshare/RNAseq_reads/americana_AG_3.R1.fq.gz"
+        ]
+    },
+    "americana_EB_1": {
+        "R1": [
+            "/home/labshare/RNAseq_reads/americana_EB_1.R1.fq.gz"
+        ]
+    },
+    "americana_EB_2": {
+        "R1": [
+            "/home/labshare/RNAseq_reads/americana_EB_2.R1.fq.gz"
+        ]
+    },
+    "americana_carcass_2": {
+        "R1": [
+            "/home/labshare/RNAseq_reads/americana_carcass_2.R1.fq.gz"
+        ]
+    },
+    "americana_carcass_3": {
+        "R1": [
+            "/home/labshare/RNAseq_reads/americana_carcass_3.R1.fq.gz"
+        ]
+    },
+    "americana_testes_2": {
+        "R1": [
+            "/home/labshare/RNAseq_reads/americana_testes_2.R1.fq.gz"
+        ]
+    },
+    "americana_testes_3": {
+        "R1": [
+            "/home/labshare/RNAseq_reads/americana_testes_3.R1.fq.gz"
+        ]
+    },
+    "novamexicana_AG_2": {
+        "R1": [
+            "/home/labshare/RNAseq_reads/novamexicana_AG_2.R1.fq.gz"
+        ]
+    },
+    "novamexicana_AG_3": {
+        "R1": [
+            "/home/labshare/RNAseq_reads/novamexicana_AG_3.R1.fq.gz"
+        ]
+    },
+    "novamexicana_EB_1": {
+        "R1": [
+            "/home/labshare/RNAseq_reads/novamexicana_EB_1.R1.fq.gz"
+        ]
+    },
+    "novamexicana_EB_2": {
+        "R1": [
+            "/home/labshare/RNAseq_reads/novamexicana_EB_2.R1.fq.gz"
+        ]
+    },
+    "novamexicana_carcass_2": {
+        "R1": [
+            "/home/labshare/RNAseq_reads/novamexicana_carcass_2.R1.fq.gz"
+        ]
+    },
+    "novamexicana_carcass_3": {
+        "R1": [
+            "/home/labshare/RNAseq_reads/novamexicana_carcass_3.R1.fq.gz"
+        ]
+    },
+    "novamexicana_testes_2": {
+        "R1": [
+            "/home/labshare/RNAseq_reads/novamexicana_testes_2.R1.fq.gz"
+        ]
+    },
+    "novamexicana_testes_3": {
+        "R1": [
+            "/home/labshare/RNAseq_reads/novamexicana_testes_3.R1.fq.gz"
+        ]
+    }
+}

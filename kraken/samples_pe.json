@@ -1,0 +1,50 @@
+{
+    "americana_AG_1": {
+        "R1": [
+            "/home/labshare/RNAseq_reads/americana_AG_1.R1.fq.gz"
+        ],
+        "R2": [
+            "/home/labshare/RNAseq_reads/americana_AG_1.R2.fq.gz"
+        ]
+    },
+    "americana_carcass_1": {
+        "R1": [
+            "/home/labshare/RNAseq_reads/americana_carcass_1.R1.fq.gz"
+        ],
+        "R2": [
+            "/home/labshare/RNAseq_reads/americana_carcass_1.R2.fq.gz"
+        ]
+    },
+    "americana_testes_1": {
+        "R1": [
+            "/home/labshare/RNAseq_reads/americana_testes_1.R1.fq.gz"
+        ],
+        "R2": [
+            "/home/labshare/RNAseq_reads/americana_testes_1.R2.fq.gz"
+        ]
+    },
+    "novamexicana_AG_1": {
+        "R1": [
+            "/home/labshare/RNAseq_reads/novamexicana_AG_1.R1.fq.gz"
+        ],
+        "R2": [
+            "/home/labshare/RNAseq_reads/novamexicana_AG_1.R2.fq.gz"
+        ]
+    },
+    "novamexicana_carcass_1": {
+        "R1": [
+            "/home/labshare/RNAseq_reads/novamexicana_carcass_1.R1.fq.gz"
+        ],
+        "R2": [
+            "/home/labshare/RNAseq_reads/novamexicana_carcass_1.R2.fq.gz"
+        ]
+    },
+    "novamexicana_testes_1": {
+        "R1": [
+            "/home/labshare/RNAseq_reads/novamexicana_testes_1.R1.fq.gz"
+        ],
+        "R2": [
+            "/home/labshare/RNAseq_reads/novamexicana_testes_1.R2.fq.gz"
+        ]
+    }
+}
