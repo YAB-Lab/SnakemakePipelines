@@ -1,0 +1,34 @@
+# Path to an uncompressed FASTA file with all chromosome sequences.
+PARENT_1_DNA: '/home/yahmed/Research/YABLab/PMPZ_Reproductive_Isolation/QTL_data/whole_plate_result/parental_genomes/DameNanopore_SB0206_canu_MEonly.fasta'
+PARENT_2_DNA: '/home/yahmed/Research/YABLab/PMPZ_Reproductive_Isolation/QTL_data/whole_plate_result/parental_genomes/Dlum09_ME_only.fasta'
+
+# Path to a folder where final files will be written.
+OUT_DIR: '/home/yahmed/Research/YABLab/PMPZ_Reproductive_Isolation/QTL_data/Ame_Lum_Backcross_Females/MSG/OUTPUT/'
+BASE_MSG: '/home/yahmed/GitHub_Repositories/msg/'
+SAMTOOLS_PATH: 'samtools'
+SCRIPTS_DIR: '/home/yahmed/GitHub_Repositories/snkmk_msg/scripts'
+PHENO_FILE: '/home/yahmed/Research/YABLab/PMPZ_Reproductive_Isolation/QTL_data/Ame_Lum_Backcross_Females/MSG/pheno_data.tsv'
+READ_THRESHOLD: '100000'
+
+
+# Path to a JSON file with DNAseq samples and their corresponding FASTQ files.
+PE_DNA_SAMPLES_JSON: '/home/yahmed/Research/YABLab/PMPZ_Reproductive_Isolation/QTL_data/Ame_Lum_Backcross_Females/MSG/samples_pe.json'
+
+# Example configuration file (config.yaml)
+fit_hmm:
+  sex: "F"
+  deltapar1: 0.1
+  deltapar2: 0.1
+  recRate: 5
+  rfac: 1
+  chroms: "all"
+  sexchrom: "Chr_X"
+  prior: "0.0,0.5,0.5"
+  theta: 1
+  gff_thresh_conf: 0.95
+  one_site_per_contig: 1
+  chroms2plot: "all"
+  pepthresh: "null"
+  use_filter_hmmdata_pl: 0
+  diffac: 0.01
+  cross: bc

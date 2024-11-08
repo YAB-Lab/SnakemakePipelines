@@ -1,0 +1,18 @@
+{
+    "AL_AF3_high_A01": {
+        "R1": [
+            "/home/yahmed/GitHub_Repositories/snkmk_msg/reads/AL_AF3_high_A01.R1.fq.gz"
+        ],
+        "R2": [
+            "/home/yahmed/GitHub_Repositories/snkmk_msg/reads/AL_AF3_high_A01.R2.fq.gz"
+        ]
+    },
+    "AL_AF3_high_A11": {
+        "R1": [
+            "/home/yahmed/GitHub_Repositories/snkmk_msg/reads/AL_AF3_high_A11.R1.fq.gz"
+        ],
+        "R2": [
+            "/home/yahmed/GitHub_Repositories/snkmk_msg/reads/AL_AF3_high_A11.R2.fq.gz"
+        ]
+    }
+}
