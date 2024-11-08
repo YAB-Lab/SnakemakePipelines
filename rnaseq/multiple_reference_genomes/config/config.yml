@@ -1,0 +1,14 @@
+# Path to PacBio assemblies and their HISAT indices.
+genomes:
+  Dpse:
+    fasta: ''
+    gtf: ''
+  Dmel:
+    fasta: ''
+    gtf: ''
+
+# Path to a folder where final files will be written.
+OUT_DIR: ''
+
+# Path to a JSON file with samples and their corresponding FASTQ files.
+SAMPLES_JSON: ''

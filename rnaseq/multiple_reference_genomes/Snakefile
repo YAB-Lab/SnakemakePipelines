@@ -1,0 +1,345 @@
+"""
+Author: Y. Ahmed-Braimah
+--- RNA-seq pipeline with multiple references
+"""
+
+import json
+import os
+import re
+from os.path import join, basename, dirname
+from os import getcwd
+from subprocess import check_output
+
+##--------------------------------------------------------------------------------------##
+## Functions
+##--------------------------------------------------------------------------------------##
+
+# To print process messages
+def message(x):
+  print()
+
+# To remove suffix from a string
+def rstrip(text, suffix):
+    if not text.endswith(suffix):
+        return text
+    return text[:len(text)-len(suffix)]
+
+
+##--------------------------------------------------------------------------------------##
+## Global config files:
+##--------------------------------------------------------------------------------------##
+
+configfile: 'config.yml'
+
+## Full path to a folder where final output files will be deposited.
+OUT_DIR = config['OUT_DIR']
+
+## Samples and their corresponding filenames.
+FILES = json.load(open(config['SAMPLES_JSON']))
+SAMPLES = sorted(FILES.keys())
+
+## Create the final output directory if it doesn't already exist
+if not os.path.exists(OUT_DIR):
+            os.makedirs(OUT_DIR)
+
+##--------------------------------------------------------------------------------------##
+#
+# _____ _             _               _               _
+#|  ___(_)_ __   __ _| |   ___  _   _| |_ _ __  _   _| |_ ___
+#| |_  | | '_ \ / _` | |  / _ \| | | | __| '_ \| | | | __/ __|
+#|  _| | | | | | (_| | | | (_) | |_| | |_| |_) | |_| | |_\__ \
+#|_|   |_|_| |_|\__,_|_|  \___/ \__,_|\__| .__/ \__,_|\__|___/
+#                                        |_|
+##--------------------------------------------------------------------------------------##
+
+## Final expected output(s)
+rule all:
+    input:
+        # expand(join(OUT_DIR, 'abundances', '{genome}', 'stringtie_gene_counts_matrix.txt'), genome = config['genomes']),
+        join(OUT_DIR, 'MultiQC', 'multiqc_report.html')
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+#  ___   ____
+# / _ \ / ___|
+#| | | | |
+#| |_| | |___
+# \__\_\\____|
+#
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule cutadapt:
+    input:
+        lambda wildcards: FILES[wildcards.sample]['R1']
+    output:
+        fastq = join(OUT_DIR, 'trimmed_reads', '{sample}.1.fq.gz'),
+        qc = join(OUT_DIR, 'trimmed_reads', '{sample}.qc.txt')
+    params:
+        # https://cutadapt.readthedocs.io/en/stable/guide.html#adapter-types
+        adapters="-a AGATCGGAAGAGCACACGTCTGAACTCCAGTCA",
+        # https://cutadapt.readthedocs.io/en/stable/guide.html#
+        extra="--minimum-length 30 -q 20"
+    log:
+        join(OUT_DIR, 'Logs', 'cutadapt', '{sample}.cutadapt.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'cutadapt', '{sample}.cutadapt.benchmark.tsv')
+    message:
+        """--- Trimming adaptors for sample {wildcards.sample}."""
+    threads:
+        4
+    resources:
+        mem_mb=8000
+    wrapper:
+        "v4.4.0/bio/cutadapt/se"
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule fastqc:
+    input:
+        r1 = lambda wildcards: FILES[wildcards.sample]['R1'],
+        fastq1 = join(OUT_DIR, 'trimmed_reads', '{sample}.1.fq.gz')
+    output:
+        r1 = join(OUT_DIR, 'fastQC', '{sample}.R1_fastqc.html'),
+        fastq1 = join(OUT_DIR, 'fastQC', '{sample}.1_fastqc.html')
+    log:
+        join(OUT_DIR, 'Logs', 'fastQC', '{sample}.fastQC.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'fastQC', '{sample}.fastQC.benchmark.tsv')
+    message:
+        """--- Checking read quality of sample "{wildcards.sample}" with FastQC """
+    conda:
+        'envs/rnaseq_yablab.yml'
+    shell:
+        'fastqc'
+            ' -o ' + join(OUT_DIR, 'fastQC') +
+            ' -t 4'
+            ' -q'
+            ' {input.r1} {input.fastq1}'
+            ' > {log} 2>&1'
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+#
+# _____                   _      ____
+#|_   _|   ___  _____  __| | ___|___ \
+#  | || | | \ \/ / _ \/ _` |/ _ \ __) |
+#  | || |_| |>  <  __/ (_| | (_) / __/
+#  |_| \__,_/_/\_\___|\__,_|\___/_____|
+#
+#
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule hisat2_index:
+    input:
+        # exon = join(OUT_DIR, 'hs2_index', '{genome}', 'exon.txt'),
+        # ss = join(OUT_DIR, 'hs2_index', '{genome}', 'ss.txt'),
+        fasta = lambda wildcards: config['genomes'][wildcards.genome]['fasta']
+    output:
+        directory(join(OUT_DIR, 'hs2_index', 'index_{genome}'))
+    params:
+        prefix = join(OUT_DIR, 'hs2_index', 'index_{genome}/{genome}'),
+        # extra = lambda wildcards: f"--exon {wildcards.input.exon} --ss {wildcards.input.ss}"
+    log:
+        join(OUT_DIR, 'Logs', 'hisat2_index', '{genome}.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'hisat2_index', '{genome}.benchmark.tsv')
+    threads: 
+        4
+    wrapper:
+        "v3.12.1/bio/hisat2/index"
+
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule hisat2_align:
+    input:
+        reads = join(OUT_DIR, 'trimmed_reads', '{sample}.1.fq.gz'),
+        idx = join(OUT_DIR, 'hs2_index', 'index_{genome}')
+    output:
+        bam = temp(join(OUT_DIR, 'HISAT-2', '{genome}', '{sample}_{genome}.hisat2.bam'))
+    log:
+        join(OUT_DIR, 'Logs', 'hisat2', 'hisat2_{sample}_{genome}.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'hisat2', 'hisat2_{sample}_{genome}.benchmark.tsv')
+    params:
+        extra="-p 8 --no-unal --dta --rg-id {sample} --rg ID:{sample} --rg SM:{sample}",
+    threads: 8
+    wrapper:
+        "v3.12.1/bio/hisat2/align"
+
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule samtools_sort:
+    input:
+        join(OUT_DIR, 'HISAT-2', '{genome}', '{sample}_{genome}.hisat2.bam')
+    output:
+        temp(join(OUT_DIR, 'HISAT-2', '{genome}', '{sample}_{genome}.csorted.hisat2.bam'))
+    params:
+        extra="-m 4G",
+    threads: 8
+    wrapper:
+        "v3.12.1/bio/samtools/sort"
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule qualimap:
+    input:
+        # BAM aligned, splicing-aware, to reference genome
+        bam = join(OUT_DIR, 'HISAT-2', '{genome}', '{sample}_{genome}.csorted.hisat2.bam'),
+        # GTF containing transcript, gene, and exon data
+        gtf = join(OUT_DIR, 'StringTie', '{genome}', 'stringtie_merged.gtf')
+    output:
+        directory(join(OUT_DIR, 'QC', '{genome}', '{sample}_{genome}_qualimap'))
+    log:
+        join(OUT_DIR, 'Logs', 'qualimap', 'qualmap_{sample}_{genome}.log')
+    # optional specification of memory usage of the JVM that snakemake will respect with global
+    # resource restrictions (https://snakemake.readthedocs.io/en/latest/snakefiles/rules.html#resources)
+    # and which can be used to request RAM during cluster job submission as `{resources.mem_mb}`:
+    # https://snakemake.readthedocs.io/en/latest/executing/cluster.html#job-properties
+    wrapper:
+        "v3.12.1/bio/qualimap/rnaseq"
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule stringtie:
+    input:
+        bam = join(OUT_DIR, 'HISAT-2', '{genome}', '{sample}_{genome}.csorted.hisat2.bam')
+    output:
+        asmbly = temp(join(OUT_DIR, 'StringTie', '{genome}', '{sample}_{genome}.gtf'))
+    # params:
+    #     gtf = lambda wildcards: config['genomes'][wildcards.genome]['gtf']
+    log:
+        join(OUT_DIR, 'Logs', 'stringtie', 'stringtie_{sample}_{genome}.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'stringtie', 'stringtie_{sample}_{genome}.benchmark.tsv')
+    threads:
+        8
+    resources:
+        mem_mb=16000
+    message:
+        """--- Assembling transcripts for sample {wildcards.sample} with StringTie """
+    conda:
+        'envs/rnaseq_yablab.yml'
+    shell:
+        'stringtie'
+                ' {input.bam}'
+                ' -p 8'
+                # ' -G {params.gtf}'
+                ' -o {output.asmbly}'
+                ' -l {wildcards.sample} > {log} 2>&1'
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule merge_assemblies:
+    input:
+        assemblies = expand(join(OUT_DIR, 'StringTie', '{genome}', '{sample}_{genome}.gtf'), sample = SAMPLES, genome = config['genomes'])
+    output:
+        asmbly = join(OUT_DIR, 'StringTie', '{genome}', 'stringtie_merged.gtf'),
+        geneTransMap = join(OUT_DIR, 'StringTie', '{genome}', 'stringtie_merged_gene_trans_map')
+    # params:
+    #     gtf = lambda wildcards: config['genomes'][wildcards.genome]['gtf']
+    log:
+        join(OUT_DIR, 'Logs', 'stringtie', 'st_mrg_{genome}.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'stringtie', 'st_mrg_{genome}.benchmark.tsv')
+    threads:
+        8
+    resources:
+        mem_mb=16000
+    message:
+        """--- Merging StringTie transcripts for genome mapping {wildcards.genome}"""
+    conda:
+        'envs/rnaseq_yablab.yml'
+    shell:
+        'ls -1 ' + join(OUT_DIR, 'StringTie', '{wildcards.genome}', '*.gtf') + ' > ' + join(OUT_DIR, 'StringTie', '{wildcards.genome}', 'assemblies.txt') + 
+        ' && stringtie'
+                ' --merge'
+                ' -p 8'
+                # ' -G {params.gtf}'
+                ' -o {output.asmbly} ' + join(OUT_DIR, 'StringTie', '{wildcards.genome}', 'assemblies.txt') +
+        ' && awk \'{{if ($3 == "transcript") print $10"\t"$12}}\' {output.asmbly} | sed "s/;//g" | sed "s/\\\"//g" | sort -u > {output.geneTransMap}'
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule featureCounts:
+    input:
+        hbams = expand(join(OUT_DIR, 'HISAT-2', '{genome}', '{sample}_{genome}.csorted.hisat2.bam'), sample = SAMPLES, genome = config['genomes']),
+        mrgd = join(OUT_DIR, 'StringTie', '{genome}', 'stringtie_merged.gtf')
+    output:
+        countsSt = join(OUT_DIR, 'abundances', '{genome}', 'stringtie_gene_counts.txt'),
+        countsStMatrix = join(OUT_DIR, 'abundances', '{genome}', 'stringtie_gene_counts_matrix.txt')
+    # params:
+    #     gtf = lambda wildcards: config['genomes'][wildcards.genome]['gtf']
+    log:
+        join(OUT_DIR, 'Logs', 'abundances', '{genome}_fC.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'abundances', '{genome}_fC.benchmark.tsv')
+    threads:
+        8
+    resources:
+        mem_mb=16000
+    conda:
+        'envs/rnaseq_yablab.yml'
+    message:
+        """--- Outputting gene counts with featureCounts for {wildcards.genome} genome mapping. """
+    shell:
+        'featureCounts'
+                ' -a {input.mrgd}'
+                # ' -p'
+                ' -T 8'
+                # ' -F {params.gtf}'
+                ' -o {output.countsSt} '
+                 + join(OUT_DIR, 'HISAT-2', '{wildcards.genome}', '*.csorted.hisat2.bam') +
+                ' > {log} 2>&1'
+        ' && cat {output.countsSt} | cut -f 1,7- | sed 1d > {output.countsStMatrix}'
+
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+# __  __       _ _   _  ___   ____
+#|  \/  |_   _| | |_(_)/ _ \ / ___|
+#| |\/| | | | | | __| | | | | |
+#| |  | | |_| | | |_| | |_| | |___
+#|_|  |_|\__,_|_|\__|_|\__\_\\____|
+#
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule multiQC:
+    input:
+        expand(join(OUT_DIR, 'fastQC', '{sample}.R1_fastqc.html'), sample = SAMPLES),
+        expand(join(OUT_DIR, 'fastQC', '{sample}.1_fastqc.html'), sample = SAMPLES),
+        expand(join(OUT_DIR, 'trimmed_reads', '{sample}.qc.txt'), sample = SAMPLES),
+        expand(join(OUT_DIR, 'Logs', 'hisat2', 'hisat2_{sample}_{genome}.log'), sample = SAMPLES, genome = config['genomes']),
+        expand(join(OUT_DIR, 'Logs', 'qualimap', 'qualmap_{sample}_{genome}.log'), sample = SAMPLES, genome = config['genomes']),
+        expand(join(OUT_DIR, 'Logs', 'abundances', '{genome}_fC.log'), genome = config['genomes'])
+    output:
+        join(OUT_DIR, 'MultiQC', 'multiqc_report.html')
+    log:
+        join(OUT_DIR, 'MultiQC', 'multiQC.log')
+    benchmark:
+        join(OUT_DIR, 'MultiQC', 'multiQC.benchmark.tsv')
+    conda:
+        'envs/rnaseq_yablab.yml'
+    message:
+        """--- Running MultiQC """
+    shell:
+        'ls -1 ' + join(OUT_DIR) + '/fastQC/*fastqc.zip >> ' + join(OUT_DIR, 'MultiQC', 'summary_files.txt') +
+        ' && ls -1 ' + join(OUT_DIR) + '/trimmed_reads/*.qc.txt >> ' + join(OUT_DIR, 'MultiQC', 'summary_files.txt') +  
+        ' && ls -1 ' + join(OUT_DIR) + '/Logs/hisat2/hisat2_*log >> ' + join(OUT_DIR, 'MultiQC', 'summary_files.txt') +
+        ' && ls -1 ' + join(OUT_DIR) + '/QC/*/*_qualimap| grep ":" | sed "s/://g" >> ' + join(OUT_DIR, 'MultiQC', 'summary_files.txt') +
+        ' && ls -1 ' + join(OUT_DIR) + '/abundances*/*/*summary >> ' + join(OUT_DIR, 'MultiQC', 'summary_files.txt') +
+        ' && multiqc'
+                ' -f'
+                ' -o ' + join(OUT_DIR, 'MultiQC') + ' -l ' + join(OUT_DIR, 'MultiQC', 'summary_files.txt') +
+                ' > {log} 2>&1'
