@@ -81,7 +81,7 @@ rule cutadapt:
         # https://cutadapt.readthedocs.io/en/stable/guide.html#adapter-types
         adapters="-a AGATCGGAAGAGCACACGTCTGAACTCCAGTCA -a CTGTCTCTTATACACATCT -A AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT -A CTGTCTCTTATACACATCT",
         # https://cutadapt.readthedocs.io/en/stable/guide.html#
-        extra="--minimum-length 50 -q 20"
+        extra="--minimum-length 30 -q 20"
     log:
         join(OUT_DIR, 'Logs', 'cutadapt', '{sample}.cutadapt.log')
     benchmark:
@@ -166,7 +166,7 @@ rule hisat2_index:
         directory(join(OUT_DIR, 'hs2_index', 'index_{genome}'))
     params:
         prefix = join(OUT_DIR, 'hs2_index', 'index_{genome}/{genome}'),
-        extra = "--exon {input.exon} --ss {input.ss}"
+        extra = lambda wildcards, input: f"--exon {input.exon} --ss {input.ss}"
     log:
         join(OUT_DIR, 'Logs', 'hisat2_index', '{genome}.log')
     benchmark:
@@ -340,8 +340,8 @@ rule featureCounts:
 
 rule multiQC:
     input:
-        expand(join(OUT_DIR, 'fastQC', '{sample}.R1_fastqc.html'), sample = SAMPLES),
-        expand(join(OUT_DIR, 'fastQC', '{sample}.1_fastqc.html'), sample = SAMPLES),
+        # expand(join(OUT_DIR, 'fastQC', '{sample}.R1_fastqc.html'), sample = SAMPLES),
+        # expand(join(OUT_DIR, 'fastQC', '{sample}.1_fastqc.html'), sample = SAMPLES),
         expand(join(OUT_DIR, 'trimmed_reads', '{sample}.qc.txt'), sample = SAMPLES),
         expand(join(OUT_DIR, 'Logs', 'hisat2', 'hisat2_{sample}_{genome}.log'), sample = SAMPLES, genome = config['genomes']),
         expand(join(OUT_DIR, 'Logs', 'qualimap', 'qualmap_{sample}_{genome}.log'), sample = SAMPLES, genome = config['genomes']),
