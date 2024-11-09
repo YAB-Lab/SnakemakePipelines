@@ -71,15 +71,17 @@ rule all:
 
 rule cutadapt:
     input:
-        lambda wildcards: FILES[wildcards.sample]['R1']
+        lambda wildcards: FILES[wildcards.sample]['R1'],
+        lambda wildcards: FILES[wildcards.sample]['R2']
     output:
-        fastq = join(OUT_DIR, 'trimmed_reads', '{sample}.1.fq.gz'),
+        fastq1 = join(OUT_DIR, 'trimmed_reads', '{sample}.1.fq.gz'),
+        fastq2 = join(OUT_DIR, 'trimmed_reads', '{sample}.2.fq.gz'),
         qc = join(OUT_DIR, 'trimmed_reads', '{sample}.qc.txt')
     params:
         # https://cutadapt.readthedocs.io/en/stable/guide.html#adapter-types
-        adapters="-a AGATCGGAAGAGCACACGTCTGAACTCCAGTCA",
+        adapters="-a AGATCGGAAGAGCACACGTCTGAACTCCAGTCA -a CTGTCTCTTATACACATCT -A AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT -A CTGTCTCTTATACACATCT",
         # https://cutadapt.readthedocs.io/en/stable/guide.html#
-        extra="--minimum-length 30 -q 20"
+        extra="--minimum-length 50 -q 20"
     log:
         join(OUT_DIR, 'Logs', 'cutadapt', '{sample}.cutadapt.log')
     benchmark:
@@ -91,7 +93,7 @@ rule cutadapt:
     resources:
         mem_mb=8000
     wrapper:
-        "v4.4.0/bio/cutadapt/se"
+        "v4.4.0/bio/cutadapt/pe"
 
 ##--------------------------------------------------------------------------------------##
 ##--------------------------------------------------------------------------------------##
@@ -99,10 +101,14 @@ rule cutadapt:
 rule fastqc:
     input:
         r1 = lambda wildcards: FILES[wildcards.sample]['R1'],
-        fastq1 = join(OUT_DIR, 'trimmed_reads', '{sample}.1.fq.gz')
+        r2 = lambda wildcards: FILES[wildcards.sample]['R2'],
+        fastq1 = join(OUT_DIR, 'trimmed_reads', '{sample}.1.fq.gz'),
+        fastq2 = join(OUT_DIR, 'trimmed_reads', '{sample}.2.fq.gz'),
     output:
         r1 = join(OUT_DIR, 'fastQC', '{sample}.R1_fastqc.html'),
-        fastq1 = join(OUT_DIR, 'fastQC', '{sample}.1_fastqc.html')
+        r2 = join(OUT_DIR, 'fastQC', '{sample}.R2_fastqc.html'),
+        fastq1 = join(OUT_DIR, 'fastQC', '{sample}.1_fastqc.html'),
+        fastq2 = join(OUT_DIR, 'fastQC', '{sample}.2_fastqc.html'),
     log:
         join(OUT_DIR, 'Logs', 'fastQC', '{sample}.fastQC.log')
     benchmark:
@@ -116,7 +122,7 @@ rule fastqc:
             ' -o ' + join(OUT_DIR, 'fastQC') +
             ' -t 4'
             ' -q'
-            ' {input.r1} {input.fastq1}'
+            ' {input.r1} {input.r2} {input.fastq1} {input.fastq2}'
             ' > {log} 2>&1'
 
 ##--------------------------------------------------------------------------------------##
@@ -132,16 +138,35 @@ rule fastqc:
 ##--------------------------------------------------------------------------------------##
 ##--------------------------------------------------------------------------------------##
 
+rule hs2_extract_exons_ss:
+    input:
+        gtf = lambda wildcards: config['genomes'][wildcards.genome]['gtf']
+    output:
+        exon = join(OUT_DIR, 'hs2_index', '{genome}', 'exon.txt'),
+        ss = join(OUT_DIR, 'hs2_index', '{genome}', 'ss.txt')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'hisat2_index', '{genome}_exons_ss.benchmark.tsv')
+    threads: 
+        4
+    conda:
+        'envs/rnaseq_yablab.yml'
+    shell:
+        'hisat2_extract_exons.py {input.gtf} > {output.exon}'
+        ' && hisat2_extract_splice_sites.py {input.gtf} > {output.ss}'
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
 rule hisat2_index:
     input:
-        # exon = join(OUT_DIR, 'hs2_index', '{genome}', 'exon.txt'),
-        # ss = join(OUT_DIR, 'hs2_index', '{genome}', 'ss.txt'),
+        exon = join(OUT_DIR, 'hs2_index', '{genome}', 'exon.txt'),
+        ss = join(OUT_DIR, 'hs2_index', '{genome}', 'ss.txt'),
         fasta = lambda wildcards: config['genomes'][wildcards.genome]['fasta']
     output:
         directory(join(OUT_DIR, 'hs2_index', 'index_{genome}'))
     params:
         prefix = join(OUT_DIR, 'hs2_index', 'index_{genome}/{genome}'),
-        # extra = lambda wildcards: f"--exon {wildcards.input.exon} --ss {wildcards.input.ss}"
+        extra = "--exon {input.exon} --ss {input.ss}"
     log:
         join(OUT_DIR, 'Logs', 'hisat2_index', '{genome}.log')
     benchmark:
@@ -150,7 +175,6 @@ rule hisat2_index:
         4
     wrapper:
         "v3.12.1/bio/hisat2/index"
-
 
 ##--------------------------------------------------------------------------------------##
 ##--------------------------------------------------------------------------------------##
@@ -194,7 +218,7 @@ rule qualimap:
         # BAM aligned, splicing-aware, to reference genome
         bam = join(OUT_DIR, 'HISAT-2', '{genome}', '{sample}_{genome}.csorted.hisat2.bam'),
         # GTF containing transcript, gene, and exon data
-        gtf = join(OUT_DIR, 'StringTie', '{genome}', 'stringtie_merged.gtf')
+        gtf = lambda wildcards: config['genomes'][wildcards.genome]['gtf']
     output:
         directory(join(OUT_DIR, 'QC', '{genome}', '{sample}_{genome}_qualimap'))
     log:
@@ -214,8 +238,8 @@ rule stringtie:
         bam = join(OUT_DIR, 'HISAT-2', '{genome}', '{sample}_{genome}.csorted.hisat2.bam')
     output:
         asmbly = temp(join(OUT_DIR, 'StringTie', '{genome}', '{sample}_{genome}.gtf'))
-    # params:
-    #     gtf = lambda wildcards: config['genomes'][wildcards.genome]['gtf']
+    params:
+        gtf = lambda wildcards: config['genomes'][wildcards.genome]['gtf']
     log:
         join(OUT_DIR, 'Logs', 'stringtie', 'stringtie_{sample}_{genome}.log')
     benchmark:
@@ -232,7 +256,7 @@ rule stringtie:
         'stringtie'
                 ' {input.bam}'
                 ' -p 8'
-                # ' -G {params.gtf}'
+                ' -G {params.gtf}'
                 ' -o {output.asmbly}'
                 ' -l {wildcards.sample} > {log} 2>&1'
 
@@ -245,8 +269,8 @@ rule merge_assemblies:
     output:
         asmbly = join(OUT_DIR, 'StringTie', '{genome}', 'stringtie_merged.gtf'),
         geneTransMap = join(OUT_DIR, 'StringTie', '{genome}', 'stringtie_merged_gene_trans_map')
-    # params:
-    #     gtf = lambda wildcards: config['genomes'][wildcards.genome]['gtf']
+    params:
+        gtf = lambda wildcards: config['genomes'][wildcards.genome]['gtf']
     log:
         join(OUT_DIR, 'Logs', 'stringtie', 'st_mrg_{genome}.log')
     benchmark:
@@ -264,7 +288,7 @@ rule merge_assemblies:
         ' && stringtie'
                 ' --merge'
                 ' -p 8'
-                # ' -G {params.gtf}'
+                ' -G {params.gtf}'
                 ' -o {output.asmbly} ' + join(OUT_DIR, 'StringTie', '{wildcards.genome}', 'assemblies.txt') +
         ' && awk \'{{if ($3 == "transcript") print $10"\t"$12}}\' {output.asmbly} | sed "s/;//g" | sed "s/\\\"//g" | sort -u > {output.geneTransMap}'
 
@@ -273,13 +297,12 @@ rule merge_assemblies:
 
 rule featureCounts:
     input:
-        hbams = expand(join(OUT_DIR, 'HISAT-2', '{genome}', '{sample}_{genome}.csorted.hisat2.bam'), sample = SAMPLES, genome = config['genomes']),
-        mrgd = join(OUT_DIR, 'StringTie', '{genome}', 'stringtie_merged.gtf')
+        hbams = expand(join(OUT_DIR, 'HISAT-2', '{genome}', '{sample}_{genome}.csorted.hisat2.bam'), sample = SAMPLES, genome = config['genomes'])
     output:
         countsSt = join(OUT_DIR, 'abundances', '{genome}', 'stringtie_gene_counts.txt'),
         countsStMatrix = join(OUT_DIR, 'abundances', '{genome}', 'stringtie_gene_counts_matrix.txt')
-    # params:
-    #     gtf = lambda wildcards: config['genomes'][wildcards.genome]['gtf']
+    params:
+        gtf = lambda wildcards: config['genomes'][wildcards.genome]['gtf']
     log:
         join(OUT_DIR, 'Logs', 'abundances', '{genome}_fC.log')
     benchmark:
@@ -294,10 +317,10 @@ rule featureCounts:
         """--- Outputting gene counts with featureCounts for {wildcards.genome} genome mapping. """
     shell:
         'featureCounts'
-                ' -a {input.mrgd}'
-                # ' -p'
+                ' -a {params.gtf}'
+                ' -p'
                 ' -T 8'
-                # ' -F {params.gtf}'
+                ' -F GTF'
                 ' -o {output.countsSt} '
                  + join(OUT_DIR, 'HISAT-2', '{wildcards.genome}', '*.csorted.hisat2.bam') +
                 ' > {log} 2>&1'
