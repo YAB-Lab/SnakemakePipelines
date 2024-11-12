@@ -1,0 +1,657 @@
+"""
+Author: Y. Ahmed-Braimah
+--- Snakemake workflow for population genomic
+--- analysis of D. americana (SB.02.06)
+"""
+
+import json
+import os
+from os.path import join, basename, dirname, isfile
+from os import getcwd, listdir
+from subprocess import check_output
+import subprocess
+
+##--------------------------------------------------------------------------------------##
+## Functions
+##--------------------------------------------------------------------------------------##
+
+# To print process messages
+def message(x):
+  print()
+
+# To remove suffix from a string
+def rstrip(text, suffix):
+    if not text.endswith(suffix):
+        return text
+    return text[:len(text)-len(suffix)]
+
+## define environment variables
+
+##--------------------------------------------------------------------------------------##
+## Global config files:
+##--------------------------------------------------------------------------------------##
+
+configfile: 'config.yml'
+
+# Full path to an uncompressed FASTA file with all chromosome sequences.
+DNA = config['DNA']
+BWA_INDEX = config['BWA_INDEX']
+GTF = config['GTF']
+GFFdb = config['GFFdb']
+
+# Full path to a folder where final output files will be deposited.
+OUT_DIR = config['OUT_DIR']
+HOME_DIR = config['HOME_DIR']
+
+# DNAseq Samples and their corresponding filenames.
+# paired-end:
+FILES = json.load(open(config['PE_SAMPLES_JSON']))
+SAMPLES = sorted(FILES.keys())
+
+## Create the final output directory if it doesn't already exist
+if not os.path.exists(OUT_DIR):
+            os.makedirs(OUT_DIR)
+
+##--------------------------------------------------------------------------------------##--------------------------------------------------------------------------------------
+# _____ _             _               _               _
+#|  ___(_)_ __   __ _| |   ___  _   _| |_ _ __  _   _| |_ ___
+#| |_  | | '_ \ / _` | |  / _ \| | | | __| '_ \| | | | __/ __|
+#|  _| | | | | | (_| | | | (_) | |_| | |_| |_) | |_| | |_\__ \
+#|_|   |_|_| |_|\__,_|_|  \___/ \__,_|\__| .__/ \__,_|\__|___/
+#                                        |_|
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------
+
+## Final expected output(s)
+rule all:
+    input:
+        # join(OUT_DIR, 'MultiQC', 'multiqc_report.html'),
+        # join(OUT_DIR, 'VCF', 'BWA_GATK', 'all_sites', 'allsites.vcf.gz'),
+        join(OUT_DIR, 'Delly', 'germline.bcf')
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+#  ___   ____
+# / _ \ / ___|
+#| | | | |
+#| |_| | |___
+# \__\_\\____|
+#
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule fastqc:
+    input:
+        r1 = lambda wildcards: FILES[wildcards.sample]['R1'],
+        r2 = lambda wildcards: FILES[wildcards.sample]['R2'],
+    output:
+        r1 = join(OUT_DIR, 'fastQC', '{sample}.R1_fastqc.html'),
+        r2 = join(OUT_DIR, 'fastQC', '{sample}.R2_fastqc.html'),
+    log:
+        join(OUT_DIR, 'Logs', 'fastQC', '{sample}.fastQC.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'fastQC', '{sample}.fastQC.benchmark.tsv')
+    message:
+        """--- Checking read quality of sample "{wildcards.sample}" with FastQC """
+    conda:
+        'envs/DaGRP.yml'
+    shell:
+        'fastqc'
+            ' -o ' + join(OUT_DIR, 'fastQC') +
+            ' -t 4'
+            ' -q'
+            ' {input.r1} {input.r2}'
+            ' > {log} 2>&1'
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule cutadapt:
+    input:
+        lambda wildcards: FILES[wildcards.sample]['R1'],
+        lambda wildcards: FILES[wildcards.sample]['R2']
+    output:
+        fastq1 = join(OUT_DIR, 'trimmed_reads', '{sample}.R1.fastq.gz'),
+        fastq2 = join(OUT_DIR, 'trimmed_reads', '{sample}.R2.fastq.gz'),
+        qc = join(OUT_DIR, 'trimmed_reads', '{sample}.qc.txt')
+    params:
+        # https://cutadapt.readthedocs.io/en/stable/guide.html#adapter-types
+        adapters="-a AGATCGGAAGAGCACACGTCTGAACTCCAGTCA -a CTGTCTCTTATACACATCT -A AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT -A CTGTCTCTTATACACATCT",
+        # https://cutadapt.readthedocs.io/en/stable/guide.html#
+        extra="--minimum-length 50 -q 20"
+    log:
+        join(OUT_DIR, 'Logs', 'cutadapt', '{sample}.cutadapt.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'cutadapt', '{sample}.cutadapt.benchmark.tsv')
+    message:
+        """--- Trimming adaptors for sample {wildcards.sample}."""
+    threads:
+        4
+    resources:
+        mem_mb=8000
+    wrapper:
+        "v3.10.2/bio/cutadapt/pe"
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+# ______        ___
+#| __ ) \      / / \
+#|  _ \\ \ /\ / / _ \
+#| |_) |\ V  V / ___ \
+#|____/  \_/\_/_/   \_\
+#
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+
+## Rule for mapping PE reads to the genome with Bowtie2
+rule BWA_MEM:
+    input:
+        r1 = join(OUT_DIR, 'trimmed_reads', '{sample}.R1.fastq.gz'),
+        r2 = join(OUT_DIR, 'trimmed_reads', '{sample}.R2.fastq.gz')
+    params:
+        index = BWA_INDEX
+    output:
+        bam = join(OUT_DIR, 'BWA', '{sample}', '{sample}.csorted.bwa.bam'),
+        bai = join(OUT_DIR, 'BWA', '{sample}', '{sample}.csorted.bwa.bam.bai')
+    log:
+        bwa = join(OUT_DIR, 'Logs', 'BWA', '{sample}.bwa.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'BWA', '{sample}.benchmark.tsv')
+    message:
+        """--- Mapping PE sample "{wildcards.sample}" with BWA MEM."""
+    threads:
+        8
+    resources:
+        mem_mb=32000
+    conda:
+        'envs/DaGRP.yml'
+    shell:
+        'bwa mem'
+            ' -t 8'
+            ' -v 1'
+            ' -R \'@RG\\tID:i{wildcards.sample}\\tSM:{wildcards.sample}\'' 
+            ' {params.index}'
+            ' {input.r1}'
+            ' {input.r2}'
+            ' | samtools sort -@ 8 -o {output.bam} -'
+            ' > {log.bwa} 2>&1 &&'
+        'samtools index {output.bam} {output.bai}'
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule bamMarkDuplicates:
+    input:
+        bam = join(OUT_DIR, 'BWA', '{sample}', '{sample}.csorted.bwa.bam')
+    output:
+        dupMarkC = join(OUT_DIR, 'BWA', '{sample}', '{sample}.csorted.dupMark.bwa.bam')
+    threads:
+        8
+    resources:
+        mem_mb=12000
+    log:
+        join(OUT_DIR, 'Logs', 'MarkDuplicates', '{sample}.dupmark.log')
+    benchmark:
+        join(OUT_DIR, 'Bnechmarks', 'MarkDuplicates','{sample}.dupmark.benchmark.tsv')
+    message:
+        """--- Marking duplicates for "{wildcards.sample}" with Picard."""
+    conda:
+        'envs/DaGRP.yml'
+    shell:
+        'picard MarkDuplicates'
+                ' -I {input.bam}'
+                ' -O {output.dupMarkC}'
+                ' -M {log}'
+                ' -VALIDATION_STRINGENCY LENIENT'
+                ' -ASSUME_SORTED true'
+                ' -REMOVE_DUPLICATES false'
+        ' && samtools index -@ 8 {output.dupMarkC}'
+
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule delly_call:
+    input:
+        bam = join(OUT_DIR, 'BWA', '{sample}', '{sample}.csorted.dupMark.bwa.bam')
+    output:
+        bcf = join(OUT_DIR, 'Delly', '{sample}', '{sample}.bcf')
+    params:
+        dna = DNA
+    threads:
+        8
+    resources:
+        mem_mb=12000
+    log:
+        join(OUT_DIR, 'Logs', 'Delly', '{sample}.delly_call.log')
+    benchmark:
+        join(OUT_DIR, 'Bnechmarks', 'Delly','{sample}.delly_call.benchmark.tsv')
+    message:
+        """--- SV calling for "{wildcards.sample}" with Delly."""
+    conda:
+        'envs/Delly.yml'
+    shell:
+        'delly call'
+                ' -g {params.dna}'
+                ' -o {output.bcf}'
+                ' {input.bam}'
+                ' > {log} 2>&1'
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule delly_merge:
+    input:
+        expand(join(OUT_DIR, 'Delly', '{sample}', '{sample}.bcf'), sample = SAMPLES)
+    output:
+        bcf = join(OUT_DIR, 'Delly', 'sites.bcf')
+    params:
+        dna = DNA
+    threads:
+        8
+    resources:
+        mem_mb=12000
+    log:
+        join(OUT_DIR, 'Logs', 'Delly', 'delly_merge.log')
+    benchmark:
+        join(OUT_DIR, 'Bnechmarks', 'Delly','delly_merge.benchmark.tsv')
+    message:
+        """--- Merging SV sites with Delly."""
+    conda:
+        'envs/Delly.yml'
+    shell:
+        'delly merge'
+                ' -o {output.bcf}'
+                ' ' + join(OUT_DIR, 'Delly', '*', '*.bcf') +
+                ' > {log} 2>&1'
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule delly_geno:
+    input:
+        bam = join(OUT_DIR, 'BWA', '{sample}', '{sample}.csorted.dupMark.bwa.bam'),
+        bcf = join(OUT_DIR, 'Delly', 'sites.bcf')
+    output:
+        geno_bcf = join(OUT_DIR, 'Delly', '{sample}', '{sample}.geno.bcf')
+    params:
+        dna = DNA
+    threads:
+        8
+    resources:
+        mem_mb=12000
+    log:
+        join(OUT_DIR, 'Logs', 'Delly', '{sample}.delly_geno.log')
+    benchmark:
+        join(OUT_DIR, 'Bnechmarks', 'Delly','{sample}.delly_geno.benchmark.tsv')
+    message:
+        """--- Genotyping SV across sample "{wildcards.sample}" with Delly."""
+    conda:
+        'envs/Delly.yml'
+    shell:
+        'delly call'
+                ' -g {params.dna}'
+                ' -v {input.bcf}'
+                ' -o {output.geno_bcf}'
+                ' {input.bam}'
+                ' > {log} 2>&1'
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule sv_merge:
+    input:
+        expand(join(OUT_DIR, 'Delly', '{sample}', '{sample}.geno.bcf'), sample = SAMPLES)
+    output:
+        bcf = join(OUT_DIR, 'Delly', 'merged.bcf')
+    threads:
+        24
+    resources:
+        mem_mb=32000
+    log:
+        join(OUT_DIR, 'Logs', 'Delly', 'delly_geno_merge.log')
+    benchmark:
+        join(OUT_DIR, 'Bnechmarks', 'Delly','delly_geno_merge.benchmark.tsv')
+    message:
+        """--- Merging SV genotypes with BCFtools."""
+    conda:
+        'envs/DaGRP.yml'
+    shell:
+        'bcftools merge'
+                ' -m id'
+                ' -O b'
+                ' -o {output.bcf}'
+                ' ' + join(OUT_DIR, 'Delly', '*', '*.geno.bcf') +
+                ' > {log} 2>&1'
+
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule delly_filter:
+    input:
+        bcf = join(OUT_DIR, 'Delly', 'merged.bcf')
+    output:
+        bcf = join(OUT_DIR, 'Delly', 'germline.bcf')
+    threads:
+        8
+    resources:
+        mem_mb=12000
+    log:
+        join(OUT_DIR, 'Logs', 'Delly', 'delly_filter.log')
+    benchmark:
+        join(OUT_DIR, 'Bnechmarks', 'Delly','delly_filter.benchmark.tsv')
+    message:
+        """--- Applying germline SV filter."""
+    conda:
+        'envs/Delly.yml'
+    shell:
+        'delly filter'
+                ' -f germline'
+                ' -o {output.bcf}'
+                ' {input.bcf}'
+                ' > {log} 2>&1'
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule Samtools_consensus:
+    input:
+        bam = join(OUT_DIR, 'BWA', '{sample}', '{sample}.csorted.bwa.bam')
+    output:
+        fasta = join(OUT_DIR, 'Consensus', '{sample}', '{sample}.fasta')
+    log:
+        join(OUT_DIR, 'Logs', 'Consensus', '{sample}.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'Consensus', '{sample}.benchmark.tsv')
+    message:
+        """--- Outputting consensus FASTA for "{wildcards.sample}" with Samtools."""
+    threads:
+        8
+    resources:
+        mem_mb=16000
+    conda:
+        'envs/DaGRP.yml'
+    shell:
+        'samtools consensus'
+            ' -f FASTA'
+            ' -l 85'
+            ' -d 3' 
+            ' -@ 8'
+            ' --min-MQ 30'
+            ' -o {output.fasta}'
+            ' {input.bam}'
+            ' > {log} 2>&1 '
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule qualimap:
+    input:
+        bam = join(OUT_DIR, 'BWA', '{sample}', '{sample}.csorted.bwa.bam')
+    output:
+        bamqc = join(OUT_DIR, 'BWA', '{sample}', 'bamqc', 'qualimapReport.html')
+    log:
+        bamqc = join(OUT_DIR, 'Logs', 'Qualimap', '{sample}.bamqc.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'Qualimap', '{sample}.benchmark.tsv')
+    message:
+        """--- Running BAMQC for sample "{wildcards.sample}" ."""
+    threads:
+        8
+    resources:
+        mem_mb=32000
+    conda:
+        'envs/DaGRP.yml'
+    shell:
+        'qualimap bamqc'
+            ' -bam {input.bam}'
+            ' -c'
+            ' -outdir ' + join(OUT_DIR, 'BWA', '{wildcards.sample}', 'bamqc') +
+            ' --java-mem-size=32G'
+            ' -nt 8'
+            ' 2> {log.bamqc}'
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule liftoff:
+    input:
+        fasta = join(OUT_DIR, 'Consensus', '{sample}', '{sample}.fasta')
+    output:
+        gtf = join(OUT_DIR, 'Liftoff', '{sample}', '{sample}.gtf'),
+        unmapped = join(OUT_DIR, 'Liftoff', '{sample}', 'unmapped_features.txt') 
+    params:
+        gtf = GTF,
+        db = GFFdb,
+        dna = DNA
+    log:
+        join(OUT_DIR, 'Logs', 'Liftoff', '{sample}.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'Liftoff', '{sample}.benchmark.tsv')
+    message:
+        """--- Creating GTF file for "{wildcards.sample}" with Liftoff."""
+    threads:
+        8
+    resources:
+        mem_mb=8000
+    conda:
+        'envs/Liftoff.yml'
+    shell:
+        'liftoff'
+            ' -db {params.db}'
+            ' -o {output.gtf}'
+            ' -u {output.unmapped}'
+            ' -dir ' + join(OUT_DIR, 'Liftoff', '{wildcards.sample}', 'intermediate_files') +
+            ' {input.fasta}'
+            ' {params.dna}'
+            ' > {log} 2>&1'
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule gffread:
+    input:
+        fasta = join(OUT_DIR, 'Consensus', '{sample}', '{sample}.fasta'),
+        gtf = join(OUT_DIR, 'Liftoff', '{sample}', '{sample}.gtf')
+    output:
+        cds = join(OUT_DIR, 'Transcripts', '{sample}', '{sample}.CDS.fasta')
+    log:
+        join(OUT_DIR, 'Logs', 'Transcripts', '{sample}.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'Transcripts', '{sample}.benchmark.tsv')
+    message:
+        """--- Creating CDS file for "{wildcards.sample}" with gffread."""
+    threads:
+        8
+    resources:
+        mem_mb=8000
+    conda:
+        'envs/DaGRP.yml'
+    shell:
+        'gffread'
+            ' -g {input.fasta}'
+            ' -x {output.cds}'
+            ' -F'
+            ' {input.gtf}'
+            ' > {log} 2>&1'
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+#  ____    _  _____ _  __
+# / ___|  / \|_   _| |/ /
+#| |  _  / _ \ | | | ' /
+#| |_| |/ ___ \| | | . \
+# \____/_/   \_\_| |_|\_\
+#
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule GATK_allSites_calls:
+    input:
+        bam = join(OUT_DIR, 'BWA', '{sample}', '{sample}.csorted.bwa.bam'),
+        bai = join(OUT_DIR, 'BWA', '{sample}', '{sample}.csorted.bwa.bam.bai'),
+        dna = DNA
+    output:
+        vcf = join(OUT_DIR, 'VCF', 'BWA_GATK', 'all_sites', '{sample}', '{sample}.vcf')
+    log:
+        join(OUT_DIR, 'Logs', 'VCF', '{sample}.GATK_calls.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'VCF', '{sample}.GATK_calls.benchmark.tsv')
+    message:
+        """--- Calling all sites with GATK for sample {wildcards.sample}."""
+    threads:
+        8
+    resources:
+        mem_mb=32000
+    conda:
+        'envs/DaGRP.yml'
+    shell:
+        'gatk HaplotypeCaller'
+            ' -R {input.dna}'
+            ' -I {input.bam}'
+            ' -O ' + join(OUT_DIR, 'VCF', 'BWA_GATK', 'all_sites', '{wildcards.sample}', '{wildcards.sample}.vcf') +
+            ' -ERC GVCF'
+            ' > {log} 2>&1'
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule GATK_VariantEval:
+    input:
+        vcf = join(OUT_DIR, 'VCF', 'BWA_GATK', 'all_sites', '{sample}', '{sample}.vcf')
+    params:
+        dna = DNA
+    output:
+        evalGrp = join(OUT_DIR, 'VCF', 'BWA_GATK', 'all_sites', '{sample}', '{sample}.evalGrp')
+    log:
+        join(OUT_DIR, 'Logs', 'VCF', '{sample}.VariantEval.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'VCF', '{sample}.VariantEval.benchmark.tsv')
+    message:
+        """--- Evaluating variant calls with GATK for sample {wildcards.sample}."""
+    threads:
+        4
+    resources:
+        mem_mb=8000
+    conda:
+        'envs/DaGRP.yml'
+    shell:
+        'gatk VariantEval'
+            ' -R {params.dna}' 
+            ' -O {output.evalGrp}'
+            ' --eval {input.vcf}'
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule GATK_gDBImport:
+    input:
+        expand(join(OUT_DIR, 'VCF', 'BWA_GATK', 'all_sites', '{sample}', '{sample}.vcf'), sample = SAMPLES)
+    params:
+        dna = DNA
+    output:
+        db_flag = join(OUT_DIR, 'VCF', 'BWA_GATK', 'all_sites', 'DBImport_complete')
+    log:
+        join(OUT_DIR, 'Logs', 'VCF', 'DBImport.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'VCF', 'DBImport.benchmark.tsv')
+    message:
+        """--- Consolidating information from GVCF files across samples with GATK's GenomicsDBImport."""
+    threads:
+        8
+    resources:
+        mem_mb=32000
+    conda:
+        'envs/DaGRP.yml'
+    shell:
+        'vcf_list=$(ls ' + join(OUT_DIR, 'VCF', 'BWA_GATK', 'all_sites', '*', '*.vcf') + ' | while read l; do echo " -V "$l; done)'
+            ' && my_chr_list=$(grep ">" {params.dna} | sed "s/>//g" |  while read l; do echo " -L "$l; done)'
+            ' && gatk GenomicsDBImport'
+            ' $vcf_list'
+            ' --genomicsdb-workspace-path'
+            ' allsamples_genomicsdb'
+            ' $my_chr_list'
+            ' > {log} 2>&1 && '
+        'touch {output.db_flag}'
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule GATK_GenotypeGVCFs:
+    input:
+        db_flag = join(OUT_DIR, 'VCF', 'BWA_GATK', 'all_sites', 'DBImport_complete'),
+        dna = DNA
+    output:
+        vcf = join(OUT_DIR, 'VCF', 'BWA_GATK', 'all_sites', 'allsites.vcf.gz')
+    log:
+        join(OUT_DIR, 'Logs', 'VCF', 'GenotypeGVCFs.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'VCF', 'GenotypeGVCFs.benchmark.tsv')
+    message:
+        """--- Consolidating information from GVCF files across samples."""
+    threads:
+        24
+    resources:
+        mem_mb=256000
+    conda:
+        'envs/DaGRP.yml'
+    shell:
+        """
+        # Extract chromosome names from the reference genome
+        chroms=$(grep ">" {input.dna} | sed 's/>//g')
+
+        # Loop through each chromosome and run GenotypeGVCFs
+        for chr in $chroms; do
+            gatk GenotypeGVCFs \
+                -R {input.dna} \
+                -V gendb://allsamples_genomicsdb \
+                -all-sites \
+                -L $chr \
+                -O {output.vcf}.$chr.vcf.gz \
+                >> {log} 2>&1
+        done
+
+        # Concatenate all individual VCF files into one
+        bcftools concat -o {output.vcf} -O z $(ls {output.vcf}.*.vcf.gz) >> {log} 2>&1
+        """
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+# __  __       _ _   _  ___   ____
+#|  \/  |_   _| | |_(_)/ _ \ / ___|
+#| |\/| | | | | | __| | | | | |
+#| |  | | |_| | | |_| | |_| | |___
+#|_|  |_|\__,_|_|\__|_|\__\_\\____|
+#
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+## Rule to collate fastQC and Bowtie2 outputs with multiQC
+rule multiQC:
+    input:
+        expand(join(OUT_DIR, 'VCF', 'BWA_GATK', 'all_sites', '{sample}', '{sample}.evalGrp'), sample = SAMPLES),
+        expand(join(OUT_DIR, 'fastQC', '{sample}.R1_fastqc.html'), sample = SAMPLES),
+        expand(join(OUT_DIR, 'BWA', '{sample}', 'bamqc', 'qualimapReport.html'), sample = SAMPLES),
+        expand(join(OUT_DIR, 'trimmed_reads', '{sample}.qc.txt'), sample = SAMPLES),
+        expand(join(OUT_DIR, 'Transcripts', '{sample}', '{sample}.CDS.fasta'), sample = SAMPLES)
+    output:
+        file = join(OUT_DIR, 'MultiQC', 'multiqc_report.html')
+    log:
+        join(OUT_DIR, 'Logs', 'MultiQC', 'multiQC.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'MultiQC', 'multiQC.benchmark.tsv')
+    message:
+        """--- Running MultiQC """
+    conda:
+        'envs/DaGRP.yml'
+    shell:
+        'ls -1 ' + join(OUT_DIR) + '/VCF/BWA_GATK/all_sites/*/*.evalGrp >> ' + join(OUT_DIR, 'MultiQC', 'summary_files.txt') + 
+        ' && ls -1 ' + join(OUT_DIR) + '/BWA/*/bamqc | grep ":" | sed "s/://g" >> ' + join(OUT_DIR, 'MultiQC', 'summary_files.txt') +
+        ' && ls -1 ' + join(OUT_DIR) + '/trimmed_reads/*.qc.txt >> ' + join(OUT_DIR, 'MultiQC', 'summary_files.txt') +
+        ' && ls -1 ' + join(OUT_DIR) + '/fastQC/*fastqc.zip >> ' + join(OUT_DIR, 'MultiQC', 'summary_files.txt') + 
+        ' && multiqc'
+                ' -f'
+                ' -o ' + join(OUT_DIR, 'MultiQC') + ' -d -dd 3 -l ' + join(OUT_DIR, 'MultiQC', 'summary_files.txt') +
+                ' > {log} 2>&1'
