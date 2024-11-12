@@ -1,0 +1,14 @@
+# Path to PacBio assemblies and their HISAT indices.
+DNA: '/home/yahmed/Research/YABLab/Platinum_Genomes/Nanopore_Genomes/D_americana_SB02.06/active_genome/DameNanopore_SB0206_canu.ME.fa'
+INDEX: '/home/yahmed/Research/YABLab/Platinum_Genomes/Nanopore_Genomes/D_americana_SB02.06/index/hisat2/DameNanopore_SB0206_canu.ME_tran'
+
+
+# Path to database files and Trdvinotate home directory.
+UNIPROT: '/home/yahmed/Research/YABLab/Resource_files/Trinotate_new/uniprot_sprot.pep'
+# CUSTOM: '/home/yahmed/Trinotate/dvir1.06/dvir.proteins.fasta'
+PFAM: '/home/yahmed/Research/YABLab/Resource_files/Trinotate_new//Pfam-A.hmm'
+SQLITE: '/home/yahmed/Research/YABLab/Platinum_Genomes/Nanopore_Genomes/D_americana_SB02.06/annotation/Trinotate.sqlite'
+RNAMMER: '/home/yahmed/Software/rnammmer/rnammer'
+
+# Path to a folder where final files will be written.
+OUT_DIR: '/home/yahmed/Research/YABLab/Platinum_Genomes/Nanopore_Genomes/D_americana_SB02.06/annotation/OUTPUT'
