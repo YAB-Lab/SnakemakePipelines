@@ -55,7 +55,7 @@ if not os.path.exists(OUT_DIR):
 ## Final expected output(s)
 rule all:
     input:
-        # expand(join(OUT_DIR, 'abundances', '{genome}', 'stringtie_gene_counts_matrix.txt'), genome = config['genomes']),
+        expand(join(OUT_DIR, 'abundances', '{genome}', 'stringtie_gene_counts_matrix.txt'), genome = config['genomes']),
         join(OUT_DIR, 'MultiQC', 'multiqc_report.html')
 
 ##--------------------------------------------------------------------------------------##
@@ -181,7 +181,7 @@ rule hisat2_index:
 
 rule hisat2_align:
     input:
-        reads = join(OUT_DIR, 'trimmed_reads', '{sample}.1.fq.gz'),
+        reads = [join(OUT_DIR, 'trimmed_reads', '{sample}.1.fq.gz'), join(OUT_DIR, 'trimmed_reads', '{sample}.2.fq.gz')],
         idx = join(OUT_DIR, 'hs2_index', 'index_{genome}')
     output:
         bam = temp(join(OUT_DIR, 'HISAT-2', '{genome}', '{sample}_{genome}.hisat2.bam'))
@@ -190,7 +190,7 @@ rule hisat2_align:
     benchmark:
         join(OUT_DIR, 'Benchmarks', 'hisat2', 'hisat2_{sample}_{genome}.benchmark.tsv')
     params:
-        extra="-p 8 --no-unal --dta --rg-id {sample} --rg ID:{sample} --rg SM:{sample}",
+        extra=config["hisat2_params"]["extra"].format(sample="{sample}")
     threads: 8
     wrapper:
         "v3.12.1/bio/hisat2/align"
@@ -320,6 +320,7 @@ rule featureCounts:
                 ' -a {params.gtf}'
                 ' -p'
                 ' -T 8'
+                ' -g "gene_name"'
                 ' -F GTF'
                 ' -o {output.countsSt} '
                  + join(OUT_DIR, 'HISAT-2', '{wildcards.genome}', '*.csorted.hisat2.bam') +
@@ -340,8 +341,8 @@ rule featureCounts:
 
 rule multiQC:
     input:
-        # expand(join(OUT_DIR, 'fastQC', '{sample}.R1_fastqc.html'), sample = SAMPLES),
-        # expand(join(OUT_DIR, 'fastQC', '{sample}.1_fastqc.html'), sample = SAMPLES),
+        expand(join(OUT_DIR, 'fastQC', '{sample}.R1_fastqc.html'), sample = SAMPLES),
+        expand(join(OUT_DIR, 'fastQC', '{sample}.1_fastqc.html'), sample = SAMPLES),
         expand(join(OUT_DIR, 'trimmed_reads', '{sample}.qc.txt'), sample = SAMPLES),
         expand(join(OUT_DIR, 'Logs', 'hisat2', 'hisat2_{sample}_{genome}.log'), sample = SAMPLES, genome = config['genomes']),
         expand(join(OUT_DIR, 'Logs', 'qualimap', 'qualmap_{sample}_{genome}.log'), sample = SAMPLES, genome = config['genomes']),

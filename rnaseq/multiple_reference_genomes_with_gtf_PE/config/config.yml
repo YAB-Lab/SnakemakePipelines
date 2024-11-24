@@ -12,3 +12,7 @@ OUT_DIR: ''
 
 # Path to a JSON file with samples and their corresponding FASTQ files.
 SAMPLES_JSON: ''
+
+# HISAT2 run-specific parameters
+hisat2_params:
+  extra: "-p 8 --dta --rg-id {sample} --rg ID:{sample} --rg SM:{sample}"

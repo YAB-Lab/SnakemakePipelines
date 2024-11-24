@@ -1,0 +1,16 @@
+# Path to an uncompressed FASTA file with all chromosome sequences.
+DNA: ''
+INDEX: ''
+PROMOTERS: ''
+
+GINFO: ''
+GSIZE: ''
+MITO_ID: ''
+
+# Path to a folder where final files will be written.
+OUT_DIR: ''
+
+# Path to a JSON file with samples and their corresponding FASTQ files.
+PE_SAMPLES_JSON: ''
+
+# Sample-to-replicate groupings:
