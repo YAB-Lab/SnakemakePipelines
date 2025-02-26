@@ -242,7 +242,7 @@ rule delly_call:
     message:
         """--- SV calling for "{wildcards.sample}" mapped to "{wildcards.genome}" with Delly."""
     conda:
-        'envs/Delly.yml'
+        'envs/Delly2.yml'
     shell:
         'delly call'
                 ' -g {params.dna}'
@@ -271,7 +271,7 @@ rule delly_merge:
     message:
         """--- Merging SV sites with Delly for genome "{wildcards.genome}"."""
     conda:
-        'envs/Delly.yml'
+        'envs/Delly2.yml'
     shell:
         'delly merge'
                 ' -o {output.bcf}'
@@ -300,7 +300,7 @@ rule delly_geno:
     message:
         """--- Genotyping SV across sample "{wildcards.sample}" mapped to "{wildcards.genome}" with Delly."""
     conda:
-        'envs/Delly.yml'
+        'envs/Delly2.yml'
     shell:
         'delly call'
                 ' -g {params.dna}'
@@ -357,7 +357,7 @@ rule delly_filter:
     message:
         """--- Applying germline SV filter for alignments to "{wildcards.genome}""."""
     conda:
-        'envs/Delly.yml'
+        'envs/Delly2.yml'
     shell:
         'delly filter'
                 ' -f germline'
