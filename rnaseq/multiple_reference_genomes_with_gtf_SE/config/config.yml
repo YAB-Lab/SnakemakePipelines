@@ -1,0 +1,23 @@
+# Path to PacBio assemblies and their HISAT indices.
+genomes:
+  Dpse:
+    fasta: ''
+    gtf: ''
+  Dmel:
+    fasta: ''
+    gtf: ''
+
+# Path to a folder where final files will be written.
+OUT_DIR: ''
+
+# Path to a JSON file with samples and their corresponding FASTQ files.
+SAMPLES_JSON: ''
+
+# HISAT2 run-specific parameters
+hisat2_params:
+  extra: "-p 8 --dta --rg-id {sample} --rg ID:{sample} --rg SM:{sample}"
+
+cutadapt_params:
+  adapters: "-a AGATCGGAAGAGCACACGTCTGAACTCCAGTCA -a CTGTCTCTTATACACATCT"
+  extra: "--minimum-length 30 -q 20"
+  

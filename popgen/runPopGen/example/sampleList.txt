@@ -1,0 +1,10 @@
+Dnov	/home/labshare/data/transcriptomes/CDS/novamexicana_strains/DameG96_mapping_Dvir87_annots/Dnov_4.CDS.fasta
+Dame	/home/labshare/data/transcriptomes/CDS/americana_strains/DameG96_mapping_Dvir87_annots/Dame_00.CDS.fasta
+Dame	/home/labshare/data/transcriptomes/CDS/americana_strains/DameG96_mapping_Dvir87_annots/Dame_1041_17.CDS.fasta
+Dame	/home/labshare/data/transcriptomes/CDS/americana_strains/DameG96_mapping_Dvir87_annots/Dame_1041_23.CDS.fasta
+Dame	/home/labshare/data/transcriptomes/CDS/americana_strains/DameG96_mapping_Dvir87_annots/Dame_1041_24.CDS.fasta
+Dame	/home/labshare/data/transcriptomes/CDS/americana_strains/DameG96_mapping_Dvir87_annots/Dame_1041_32.CDS.fasta
+Dame	/home/labshare/data/transcriptomes/CDS/americana_strains/DameG96_mapping_Dvir87_annots/Dame_H5.CDS.fasta
+Dame	/home/labshare/data/transcriptomes/CDS/americana_strains/DameG96_mapping_Dvir87_annots/Dame_ML95.CDS.fasta
+Dame	/home/labshare/data/transcriptomes/CDS/americana_strains/DameG96_mapping_Dvir87_annots/Dame_SF12.CDS.fasta
+Dame	/home/labshare/data/transcriptomes/CDS/americana_strains/DameG96_mapping_Dvir87_annots/Dame_w11.CDS.fasta

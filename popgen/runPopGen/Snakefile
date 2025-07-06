@@ -1,0 +1,81 @@
+# Snakefile
+
+import yaml
+from os.path import join
+
+# Load config
+configfile: "config.yaml"
+
+## Full path to a folder where final output files will be deposited.
+OUT_DIR = config['OUT_DIR']
+
+# Read gene list from file specified in config
+GENES = [line.strip() for line in open(config["gene_list"]) if line.strip()]
+
+rule all:
+    input:
+        join(OUT_DIR, "combined_MKout_with_genes.txt")
+        # join(OUT_DIR, "combined_MKout.txt")
+
+
+rule prepFASTA:
+    input:
+        sample_list=config["sample_list"]
+    output:
+        join(OUT_DIR, "CDS.fasta")
+    conda:
+        "envs/SAPA.yml"
+    shell:
+        """
+        scripts/prepare_CDS_fasta.py -i {input.sample_list} -o {output}
+        """
+
+
+rule runMK:
+    input:
+        fasta=join(OUT_DIR, "CDS.fasta")
+    output:
+        temp(join(OUT_DIR, "MK_results", "{gene}", "MKout.txt"))
+    params:
+        extra=config["popgen_options"]["mode"]
+    threads:
+        4
+    resources:
+        mem_mb=4000
+    conda:
+        "envs/SAPA.yml"
+    shell:
+        'runPopGen.pl'
+        ' -c {input.fasta}' 
+        ' -i {wildcards.gene}'
+        ' -o ' +  join(OUT_DIR, 'MK_results', '{wildcards.gene}') +
+        ' --MK_test'
+        ' {params.extra}'
+       
+
+rule combine:
+    input:
+        expand(join(OUT_DIR, "MK_results", "{gene}", "MKout.txt"), gene=GENES)
+    output:
+        temp(join(OUT_DIR, "combined_MKout.txt"))
+    shell:
+        """
+        echo -e "TRANSCRIPT\tNS_POLY\tS_POLY\tNS_FIX\tS_FIX\tcodons\tfinal_NI\talpha\tfinal_FET" > {output}
+        for file in {OUT_DIR}/MK_results/*/MKout.txt; do
+            gene=$(basename $(dirname "$file"))
+            tail -n +2 "$file" | awk -v g="$gene" '{{print $0}}'
+        done >> {output}
+        """
+
+
+rule add_gene_column:
+    input:
+        fasta=join(OUT_DIR, "CDS.fasta"),
+        mkout=join(OUT_DIR, "combined_MKout.txt")
+    output:
+        join(OUT_DIR, "combined_MKout_with_genes.txt")
+    conda:
+        "envs/SAPA.yml"
+    script:
+        "scripts/add_gene_column.py"
+

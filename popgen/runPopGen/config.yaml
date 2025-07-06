@@ -1,0 +1,10 @@
+# config.yaml
+
+OUT_DIR: 'MK_results_Dame_Dnov_unpol'
+
+sample_list: "example/sampleList.txt"
+gene_list: "example/subSample.txt"
+
+popgen_options:
+  mode: "--pol unpol --outgroup Dnov --ingroup Dame"
+
