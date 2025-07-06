@@ -1,0 +1,11 @@
+# Path to an uncompressed FASTA file with all chromosome sequences.
+genome: '/home/labshare/data/genomes/virilis_group/lummei/15010-1011.09_Moscow/Muller/Dlum09_ME_only.fasta'
+reference: '/home/labshare/data/genomes/virilis_group/virilis/DvirRS2/Muller/DvirPacBio_ncbi_muller_only.fasta'
+
+# Path to a folder where final files will be written.
+OUT_DIR: '/home/labshare/scripts/snakemake_pipelines/assembly/polishing_with_bwa_and_pilon/test_output/'
+
+# Path to a JSON file with DNAseq samples and their corresponding FASTQ files.
+PE_SAMPLES_JSON: '/home/labshare/scripts/snakemake_pipelines/assembly/polishing_with_bwa_and_pilon/samples_pe.json'
+
+quast_extra: "--min-contig 500"  

@@ -1,0 +1,18 @@
+{
+    "DlumLM09_female": {
+        "R1": [
+            "/home/labshare/data/dnaseq/female_and_male_DNAseq_reads/DlumLM09_female.R1.fastq.gz"
+        ],
+        "R2": [
+            "/home/labshare/data/dnaseq/female_and_male_DNAseq_reads/DlumLM09_female.R2.fastq.gz"
+        ]
+    },
+    "DlumLM09_male": {
+        "R1": [
+            "/home/labshare/data/dnaseq/female_and_male_DNAseq_reads/DlumLM09_male.R1.fastq.gz"
+        ],
+        "R2": [
+            "/home/labshare/data/dnaseq/female_and_male_DNAseq_reads/DlumLM09_male.R2.fastq.gz"
+        ]
+    }
+}

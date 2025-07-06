@@ -1,0 +1,518 @@
+"""
+Author: Y. Ahmed-Braimah
+--- Snakemake workflow for polishing raw long-read assemblies with BWA and Pilon.
+"""
+
+import json
+import os
+from os.path import join, basename, dirname, isfile
+from os import getcwd, listdir
+from subprocess import check_output
+import subprocess
+
+##--------------------------------------------------------------------------------------##
+## Functions
+##--------------------------------------------------------------------------------------##
+
+# To print process messages
+def message(x):
+  print()
+
+# To remove suffix from a string
+def rstrip(text, suffix):
+    if not text.endswith(suffix):
+        return text
+    return text[:len(text)-len(suffix)]
+
+## define environment variables
+
+##--------------------------------------------------------------------------------------##
+## Global config files:
+##--------------------------------------------------------------------------------------##
+
+configfile: 'config.yml'
+
+# Full path to a folder where final output files will be deposited.
+OUT_DIR = config['OUT_DIR']
+GENOME = config['genome']
+REFERENCE = config['reference']
+
+# DNAseq Samples and their corresponding filenames.
+# paired-end:
+FILES = json.load(open(config['PE_SAMPLES_JSON']))
+SAMPLES = sorted(FILES.keys())
+
+## Create the final output directory if it doesn't already exist
+if not os.path.exists(OUT_DIR):
+            os.makedirs(OUT_DIR)
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+## Final expected output(s)
+rule all:
+    input:
+        join(OUT_DIR, "mummer", "ragtag_vs_ref.png")
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule cutadapt:
+    input:
+        lambda wildcards: FILES[wildcards.sample]['R1'],
+        lambda wildcards: FILES[wildcards.sample]['R2']
+    output:
+        fastq1 = temp(join(OUT_DIR, 'trimmed_reads', '{sample}.R1.fastq.gz')),
+        fastq2 = temp(join(OUT_DIR, 'trimmed_reads', '{sample}.R2.fastq.gz')),
+        qc = join(OUT_DIR, 'trimmed_reads', '{sample}.qc.txt')
+    params:
+        # https://cutadapt.readthedocs.io/en/stable/guide.html#adapter-types
+        adapters="-a AGATCGGAAGAGCACACGTCTGAACTCCAGTCA -a CTGTCTCTTATACACATCT -A AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT -A CTGTCTCTTATACACATCT",
+        # https://cutadapt.readthedocs.io/en/stable/guide.html#
+        extra="--minimum-length 50 -q 20"
+    log:
+        join(OUT_DIR, 'Logs', 'cutadapt', '{sample}.cutadapt.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'cutadapt', '{sample}.cutadapt.benchmark.tsv')
+    message:
+        """--- Trimming adaptors for sample {wildcards.sample}."""
+    threads:
+        4
+    resources:
+        mem_mb=8000
+    wrapper:
+        "v3.10.2/bio/cutadapt/pe"
+
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule bwa_index_r1:
+    input:
+        fasta = GENOME
+    output:
+        join(OUT_DIR, 'bwa_index_r1', 'first_genome.bwt'),
+    params:
+        extra=lambda w: f"",
+    log:
+        join(OUT_DIR, 'Logs', 'bwa_index_r1', 'first_genome.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'bwa_index_r1', 'first_genome.benchmark.tsv')
+    threads: 
+        4
+    wrapper:
+        "v5.8.2/bio/bwa/index"
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+## Rule for mapping PE reads to the genome with Bowtie2
+rule bwa_mem_r1:
+    input:
+        r1 = join(OUT_DIR, 'trimmed_reads', '{sample}.R1.fastq.gz'),
+        r2 = join(OUT_DIR, 'trimmed_reads', '{sample}.R2.fastq.gz'),
+        idx=join(OUT_DIR, 'bwa_index_r1', 'first_genome.bwt')
+    output:
+        bam = temp(join(OUT_DIR, 'BWA', 'first_genome', '{sample}', '{sample}.csorted.bwa.bam'))
+    log:
+        bwa = join(OUT_DIR, 'Logs', 'BWA', 'first_genome', '{sample}.bwa.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'BWA', 'first_genome', '{sample}.benchmark.tsv')
+    message:
+        """--- Mapping PE sample "{wildcards.sample}" to first_genome with BWA MEM (round 1)."""
+    threads:
+        8
+    resources:
+        mem_mb=32000
+    conda:
+        'envs/pilon.yml'
+    shell:
+        'bwa mem'
+            ' -t 8'
+            ' -v 1'
+            ' -R \'@RG\\tID:i{wildcards.sample}\\tSM:{wildcards.sample}\'' 
+            ' ' + join(OUT_DIR, 'bwa_index_r1', 'first_genome') +
+            ' {input.r1}'
+            ' {input.r2}'
+            ' | samtools sort -@ 8 -o {output.bam} -'
+            ' > {log.bwa} 2>&1'
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+## Rule for mapping PE reads to the genome with Bowtie2
+rule bam_index_r1:
+    input:
+        bam = join(OUT_DIR, 'BWA', 'first_genome', '{sample}', '{sample}.csorted.bwa.bam')
+    output:
+        bai = temp(join(OUT_DIR, 'BWA', 'first_genome', '{sample}', '{sample}.csorted.bwa.bam.bai'))
+    message:
+        """--- building BAM index for sample "{wildcards.sample}" (round 1)."""
+    threads:
+        4
+    resources:
+        mem_mb=8000
+    conda:
+        'envs/pilon.yml'
+    shell:
+        'samtools index {input.bam}'
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule pilon_r1:
+    input:
+        expand(join(OUT_DIR, 'BWA', 'first_genome', '{sample}', '{sample}.csorted.bwa.bam.bai'), sample=SAMPLES),
+        expand(join(OUT_DIR, 'BWA', 'first_genome', '{sample}', '{sample}.csorted.bwa.bam'), sample=SAMPLES),
+        fasta = GENOME
+    output:
+        polished = join(OUT_DIR, 'pilon_r1', 'polished_r1.fasta'),
+        changes = join(OUT_DIR, 'pilon_r1', 'polished_r1.changes'),
+        vcf = join(OUT_DIR, 'pilon_r1', 'polished_r1.vcf'),
+    log:
+        join(OUT_DIR, 'Logs', 'pilon_r1', 'polished_r1.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'pilon_r1', 'polished_r1_benchmark.tsv')
+    message:
+        """--- Polishing with pilon first_genome (round 1)."""
+    threads:
+        24
+    resources:
+        mem_mb=128000
+    conda:
+        'envs/pilon.yml'
+    shell:
+        'bam_list=$(ls ' + join(OUT_DIR, 'BWA', 'first_genome', '*', '*.bam') + ' | while read l; do echo " --frags "$l; done)'
+            ' && pilon'
+            ' --genome {input.fasta}'
+            ' $bam_list'
+            ' --output polished_r1'
+            ' --outdir ' + join(OUT_DIR, 'pilon_r1') +
+            ' --changes'
+            ' --vcf'
+            ' --threads 24'
+            ' -Xmx128G'
+            ' > {log} 2>&1' 
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule bwa_index_r2:
+    input:
+        fasta = join(OUT_DIR, 'pilon_r1', 'polished_r1.fasta')
+    output:
+        join(OUT_DIR, 'bwa_index_r2', 'second_genome.bwt'),
+    params:
+        extra=lambda w: f"",
+    log:
+        join(OUT_DIR, 'Logs', 'bwa_index_r2', 'second_genome.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'bwa_index_r2', 'second_genome.benchmark.tsv')
+    threads: 
+        4
+    wrapper:
+        "v5.8.2/bio/bwa/index"
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+## Rule for mapping PE reads to the genome with Bowtie2
+rule bwa_mem_r2:
+    input:
+        r1 = join(OUT_DIR, 'trimmed_reads', '{sample}.R1.fastq.gz'),
+        r2 = join(OUT_DIR, 'trimmed_reads', '{sample}.R2.fastq.gz'),
+        idx=join(OUT_DIR, 'bwa_index_r2', 'second_genome.bwt')
+    output:
+        bam = temp(join(OUT_DIR, 'BWA', 'second_genome', '{sample}', '{sample}.csorted.bwa.bam'))
+    log:
+        bwa = join(OUT_DIR, 'Logs', 'BWA', 'second_genome', '{sample}.bwa.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'BWA', 'second_genome', '{sample}.benchmark.tsv')
+    message:
+        """--- Mapping PE sample "{wildcards.sample}" to second_genome with BWA MEM (round 1)."""
+    threads:
+        8
+    resources:
+        mem_mb=32000
+    conda:
+        'envs/pilon.yml'
+    shell:
+        'bwa mem'
+            ' -t 8'
+            ' -v 1'
+            ' -R \'@RG\\tID:i{wildcards.sample}\\tSM:{wildcards.sample}\'' 
+            ' ' + join(OUT_DIR, 'bwa_index_r2', 'second_genome') +
+            ' {input.r1}'
+            ' {input.r2}'
+            ' | samtools sort -@ 8 -o {output.bam} -'
+            ' > {log.bwa} 2>&1'
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+## Rule for mapping PE reads to the genome with Bowtie2
+rule bam_index_r2:
+    input:
+        bam = join(OUT_DIR, 'BWA', 'second_genome', '{sample}', '{sample}.csorted.bwa.bam')
+    output:
+        bai = temp(join(OUT_DIR, 'BWA', 'second_genome', '{sample}', '{sample}.csorted.bwa.bam.bai'))
+    message:
+        """--- building BAM index for sample "{wildcards.sample}" (round 2)."""
+    threads:
+        4
+    resources:
+        mem_mb=8000
+    conda:
+        'envs/pilon.yml'
+    shell:
+        'samtools index {input.bam}'
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule pilon_r2:
+    input:
+        expand(join(OUT_DIR, 'BWA', 'second_genome', '{sample}', '{sample}.csorted.bwa.bam.bai'), sample=SAMPLES),
+        expand(join(OUT_DIR, 'BWA', 'second_genome', '{sample}', '{sample}.csorted.bwa.bam'), sample=SAMPLES),
+        fasta = join(OUT_DIR, 'pilon_r1', 'polished_r1.fasta')
+    output:
+        polished = join(OUT_DIR, 'pilon_r2', 'polished_r2.fasta'),
+        changes = join(OUT_DIR, 'pilon_r2', 'polished_r2.changes'),
+        vcf = join(OUT_DIR, 'pilon_r2', 'polished_r2.vcf'),
+    log:
+        join(OUT_DIR, 'Logs', 'pilon_r2', 'polished_r2.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'pilon_r2', 'polished_r2_benchmark.tsv')
+    message:
+        """--- Polishing with pilon second_genome (round 1)."""
+    threads:
+        24
+    resources:
+        mem_mb=128000
+    conda:
+        'envs/pilon.yml'
+    shell:
+        'bam_list=$(ls ' + join(OUT_DIR, 'BWA', 'second_genome', '*', '*.bam') + ' | while read l; do echo " --frags "$l; done)'
+            ' && pilon'
+            ' --genome {input.fasta}'
+            ' $bam_list'
+            ' --output polished_r2'
+            ' --outdir ' + join(OUT_DIR, 'pilon_r2') +
+            ' --changes'
+            ' --vcf'
+            ' --threads 24'
+            ' -Xmx128G'
+            ' > {log} 2>&1' 
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule bwa_index_r3:
+    input:
+        fasta = join(OUT_DIR, 'pilon_r2', 'polished_r2.fasta')
+    output:
+        join(OUT_DIR, 'bwa_index_r3', 'third_genome.bwt'),
+    params:
+        extra=lambda w: f"",
+    log:
+        join(OUT_DIR, 'Logs', 'bwa_index_r3', 'third_genome.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'bwa_index_r3', 'third_genome.benchmark.tsv')
+    threads: 
+        4
+    wrapper:
+        "v5.8.2/bio/bwa/index"
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+## Rule for mapping PE reads to the genome with Bowtie2
+rule bwa_mem_r3:
+    input:
+        r1 = join(OUT_DIR, 'trimmed_reads', '{sample}.R1.fastq.gz'),
+        r2 = join(OUT_DIR, 'trimmed_reads', '{sample}.R2.fastq.gz'),
+        idx=join(OUT_DIR, 'bwa_index_r3', 'third_genome.bwt')
+    output:
+        bam = temp(join(OUT_DIR, 'BWA', 'third_genome', '{sample}', '{sample}.csorted.bwa.bam'))
+    log:
+        bwa = join(OUT_DIR, 'Logs', 'BWA', 'third_genome', '{sample}.bwa.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'BWA', 'third_genome', '{sample}.benchmark.tsv')
+    message:
+        """--- Mapping PE sample "{wildcards.sample}" to third_genome with BWA MEM (round 1)."""
+    threads:
+        8
+    resources:
+        mem_mb=32000
+    conda:
+        'envs/pilon.yml'
+    shell:
+        'bwa mem'
+            ' -t 8'
+            ' -v 1'
+            ' -R \'@RG\\tID:i{wildcards.sample}\\tSM:{wildcards.sample}\'' 
+            ' ' + join(OUT_DIR, 'bwa_index_r3', 'third_genome') +
+            ' {input.r1}'
+            ' {input.r2}'
+            ' | samtools sort -@ 8 -o {output.bam} -'
+            ' > {log.bwa} 2>&1'
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+## Rule for mapping PE reads to the genome with Bowtie2
+rule bam_index_r3:
+    input:
+        bam = join(OUT_DIR, 'BWA', 'third_genome', '{sample}', '{sample}.csorted.bwa.bam')
+    output:
+        bai = temp(join(OUT_DIR, 'BWA', 'third_genome', '{sample}', '{sample}.csorted.bwa.bam.bai'))
+    message:
+        """--- building BAM index for sample "{wildcards.sample}" (round 2)."""
+    threads:
+        4
+    resources:
+        mem_mb=8000
+    conda:
+        'envs/pilon.yml'
+    shell:
+        'samtools index {input.bam}'
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule pilon_r3:
+    input:
+        expand(join(OUT_DIR, 'BWA', 'third_genome', '{sample}', '{sample}.csorted.bwa.bam.bai'), sample=SAMPLES),
+        expand(join(OUT_DIR, 'BWA', 'third_genome', '{sample}', '{sample}.csorted.bwa.bam'), sample=SAMPLES),
+        fasta = join(OUT_DIR, 'pilon_r2', 'polished_r2.fasta')
+    output:
+        polished = join(OUT_DIR, 'pilon_r3', 'polished_r3.fasta'),
+        changes = join(OUT_DIR, 'pilon_r3', 'polished_r3.changes'),
+        vcf = join(OUT_DIR, 'pilon_r3', 'polished_r3.vcf'),
+    log:
+        join(OUT_DIR, 'Logs', 'pilon_r3', 'polished_r3.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'pilon_r3', 'polished_r3_benchmark.tsv')
+    message:
+        """--- Polishing with pilon third_genome (round 1)."""
+    threads:
+        24
+    resources:
+        mem_mb=128000
+    conda:
+        'envs/pilon.yml'
+    shell:
+        'bam_list=$(ls ' + join(OUT_DIR, 'BWA', 'third_genome', '*', '*.bam') + ' | while read l; do echo " --frags "$l; done)'
+            ' && pilon'
+            ' --genome {input.fasta}'
+            ' $bam_list'
+            ' --output polished_r3'
+            ' --outdir ' + join(OUT_DIR, 'pilon_r3') +
+            ' --changes'
+            ' --vcf'
+            ' --threads 24'
+            ' -Xmx128G'
+            ' > {log} 2>&1' 
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule ragtag_scaffolding:
+    input:
+        fasta = join(OUT_DIR, 'pilon_r3', 'polished_r3.fasta')
+    params:
+        ref = REFERENCE
+    output:
+        polished = join(OUT_DIR, 'ragtag_output', 'ragtag.scaffold.fasta')
+    log:
+        join(OUT_DIR, 'Logs', 'ragtag', 'ragtag.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'ragtag', 'ragtag_benchmark.tsv')
+    message:
+        """--- Scaffolding polished assembly with RagTag."""
+    threads:
+        24
+    resources:
+        mem_mb=128000
+    conda:
+        'envs/RagTag.yml'
+    shell:
+        'ragtag_scaffold.py'
+            ' -r'
+            ' -o ' + join(OUT_DIR, 'ragtag_output') +
+            ' {params.ref}'
+            ' {input.fasta}'
+            ' > {log} 2>&1' 
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule quast_eval:
+    input:
+        assembly = join(OUT_DIR, 'ragtag_output', 'ragtag.scaffold.fasta'),
+        reference = REFERENCE
+        # gff = config.get("gff", None)
+    output:
+        html = directory(join(OUT_DIR, "quast_output"))
+    params:
+        extra = config.get("quast_extra", "")
+    conda:
+        "envs/pilon.yaml"
+    threads: 
+        4
+    shell:
+        """
+        quast.py {input.assembly} \
+        {('--reference ' + input.reference) if input.reference else ''} \
+        {('--genes ' + input.gff) if input.gff else ''} \
+        --threads {threads} \
+        -o {output.html} \
+        {params.extra}
+        """
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule nucmer_align:
+    input:
+        ref = REFERENCE,
+        query = join(OUT_DIR, 'ragtag_output', 'ragtag.scaffold.fasta')
+    output:
+        delta = join(OUT_DIR, "mummer", "ragtag_vs_ref.delta")
+    conda:
+        "envs/RagTag.yml"
+    shell:
+        'mkdir -p ' + join(OUT_DIR, 'mummer') + 
+        ' && nucmer --prefix=' + join(OUT_DIR, 'mummer', 'ragtag_vs_ref') + ' {input.ref} {input.query}'
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule delta_filter:
+    input:
+        delta = join(OUT_DIR, "mummer", "ragtag_vs_ref.delta")
+    output:
+        filtered = join(OUT_DIR, "mummer", "ragtag_vs_ref.filtered.delta")
+    conda:
+        "envs/RagTag.yml"
+    shell:
+        """
+        delta-filter -1 -i 95 -l 1000 {input.delta} > {output.filtered}
+        """
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule mummerplot:
+    input:
+        delta = join(OUT_DIR, "mummer", "ragtag_vs_ref.filtered.delta")
+    output:
+        plot = join(OUT_DIR, "mummer", "ragtag_vs_ref.png")
+    conda:
+        "envs/RagTag.yml"
+    shell:
+        'mummerplot'
+        ' --fat'
+        ' --layout'
+        ' --filter'
+        ' --png' 
+        ' -p ' + join(OUT_DIR, "mummer", "ragtag_vs_ref") +
+        ' {input.delta}'
+
