@@ -1,0 +1,152 @@
+"""
+Author: Y. Ahmed-Braimah
+--- Snakemake workflow for scaffolding long-read assemblies against a reference genome.
+"""
+
+import json
+import os
+from os.path import join, basename, dirname, isfile
+from os import getcwd, listdir
+from subprocess import check_output
+import subprocess
+
+##--------------------------------------------------------------------------------------##
+## Functions
+##--------------------------------------------------------------------------------------##
+
+# To print process messages
+def message(x):
+  print()
+
+# To remove suffix from a string
+def rstrip(text, suffix):
+    if not text.endswith(suffix):
+        return text
+    return text[:len(text)-len(suffix)]
+
+## define environment variables
+
+##--------------------------------------------------------------------------------------##
+## Global config files:
+##--------------------------------------------------------------------------------------##
+
+configfile: 'config.yml'
+
+# Full path to a folder where final output files will be deposited.
+OUT_DIR = config['OUT_DIR']
+REFERENCE = config['reference']
+
+## Create the final output directory if it doesn't already exist
+if not os.path.exists(OUT_DIR):
+            os.makedirs(OUT_DIR)
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+## Final expected output(s)
+rule all:
+    input:
+        expand(join(OUT_DIR, 'mummer', '{genome}', 'ragtag_vs_ref.png'), genome = config['genomes'])
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule ragtag_scaffolding:
+    input:
+        fasta = lambda wildcards: config['genomes'][wildcards.genome]['fasta']
+    params:
+        ref = REFERENCE
+    output:
+        polished = join(OUT_DIR, 'ragtag_output', '{genome}','ragtag.scaffold.fasta')
+    log:
+        join(OUT_DIR, 'Logs', 'ragtag', '{genome}','ragtag.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'ragtag', '{genome}','ragtag_benchmark.tsv')
+    message:
+        """--- Scaffolding "{wildcards.genome}" assembly with RagTag."""
+    threads:
+        24
+    resources:
+        mem_mb=128000
+    conda:
+        'envs/RagTag.yml'
+    shell:
+        'ragtag_scaffold.py'
+            ' -r'
+            ' -o ' + join(OUT_DIR, 'ragtag_output', '{wildcards.genome}') +
+            ' {params.ref}'
+            ' {input.fasta}'
+            ' > {log} 2>&1' 
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule quast_eval:
+    input:
+        assembly = join(OUT_DIR, 'ragtag_output', '{genome}', 'ragtag.scaffold.fasta'),
+        reference = REFERENCE
+    output:
+        html = directory(join(OUT_DIR, "quast_output"))
+    params:
+        extra = config.get("quast_extra", "")
+    conda:
+        "envs/pilon.yaml"
+    threads: 
+        4
+    shell:
+        """
+        quast.py {input.assembly} \
+        {('--reference ' + input.reference) if input.reference else ''} \
+        {('--genes ' + input.gff) if input.gff else ''} \
+        --threads {threads} \
+        -o {output.html} \
+        {params.extra}
+        """
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule nucmer_align:
+    input:
+        ref = REFERENCE,
+        query = join(OUT_DIR, 'ragtag_output', '{genome}', 'ragtag.scaffold.fasta')
+    output:
+        delta = join(OUT_DIR, 'mummer', '{genome}', 'ragtag_vs_ref.delta')
+    conda:
+        "envs/RagTag.yml"
+    shell:
+        'mkdir -p ' + join(OUT_DIR, 'mummer', '{wildcards.genome}') + 
+        ' && nucmer --prefix=' + join(OUT_DIR, 'mummer', '{wildcards.genome}', 'ragtag_vs_ref') + ' {input.ref} {input.query}'
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule delta_filter:
+    input:
+        delta = join(OUT_DIR, 'mummer', '{genome}', 'ragtag_vs_ref.delta')
+    output:
+        filtered = join(OUT_DIR, 'mummer', '{genome}', 'ragtag_vs_ref.filtered.delta')
+    conda:
+        "envs/RagTag.yml"
+    shell:
+        """
+        delta-filter -1 -i 95 -l 1000 {input.delta} > {output.filtered}
+        """
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule mummerplot:
+    input:
+        delta = join(OUT_DIR, 'mummer', '{genome}', 'ragtag_vs_ref.filtered.delta')
+    output:
+        plot = join(OUT_DIR, 'mummer', '{genome}', 'ragtag_vs_ref.png')
+    conda:
+        "envs/RagTag.yml"
+    shell:
+        'mummerplot'
+        ' --fat'
+        ' --layout'
+        ' --filter'
+        ' --png' 
+        ' -p ' + join(OUT_DIR, 'mummer', '{wildcards.genome}', 'ragtag_vs_ref') +
+        ' {input.delta}'
+

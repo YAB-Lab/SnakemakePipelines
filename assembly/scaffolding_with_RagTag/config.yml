@@ -1,0 +1,14 @@
+# Path to an uncompressed FASTA file with all chromosome sequences.
+genomes:
+  Dlit:
+    fasta: '/home/labshare/data/genomes/virilis_group/littoralis/D.littoralis.fasta'
+  Dezo:
+    fasta: '/home/labshare/data/genomes/virilis_group/ezoana/D.ezoana.masurca.fasta'
+
+# Path to reference assembly
+reference: '/home/labshare/data/genomes/virilis_group/virilis/DvirRS2/Muller/DvirPacBio_ncbi_muller_only.fasta'
+
+# Path to a folder where final files will be written.
+OUT_DIR: '/home/labshare/scripts/snakemake_pipelines/assembly/scaffolding_with_RagTag/test_output/'
+
+quast_extra: "--min-contig 500"  
