@@ -1,4 +1,0 @@
-TypeError in file /home/labshare/scripts/snakemake_pipelines/annotation/trinotate_with_multiple_genomes/Snakefile, line 57:
-stat: path should be string, bytes, os.PathLike or integer, not NoneType
-  File "/home/labshare/scripts/snakemake_pipelines/annotation/trinotate_with_multiple_genomes/Snakefile", line 57, in <module>
-  File "<frozen genericpath>", line 19, in exists

@@ -1,7 +1,0 @@
-Building DAG of jobs...
-MissingInputException in rule gffread_exons in file /home/labshare/scripts/snakemake_pipelines/annotation/trinotate_with_multiple_genomes/Snakefile, line 90:
-Missing input files for rule gffread_exons:
-    output: /home/labshare/scripts/snakemake_pipelines/annotation/trinotate_with_multiple_genomes/test_output/Daff/sequences/stringtie_transcripts.fa, /home/labshare/scripts/snakemake_pipelines/annotation/trinotate_with_multiple_genomes/test_output/Daff/sequences/stringtie_transcripts.gff3
-    wildcards: genome=Daff
-    affected files:
-        

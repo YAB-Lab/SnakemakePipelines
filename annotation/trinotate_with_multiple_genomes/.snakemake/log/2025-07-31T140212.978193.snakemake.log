@@ -1,4 +1,0 @@
-FileNotFoundError in file /home/labshare/scripts/snakemake_pipelines/annotation/trinotate_with_multiple_genomes/Snakefile, line 58:
-[Errno 2] No such file or directory: ''
-  File "/home/labshare/scripts/snakemake_pipelines/annotation/trinotate_with_multiple_genomes/Snakefile", line 58, in <module>
-  File "<frozen os>", line 225, in makedirs
