@@ -1,8 +1,0 @@
-name: rnaseq_yablab
-channels:
-  - r
-  - defaults
-  - conda-forge
-  - bioconda
-dependencies:
-  - blast=2.16.0
