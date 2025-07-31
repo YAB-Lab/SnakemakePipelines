@@ -1,0 +1,25 @@
+# Path to assemblies and gtfs.
+genomes:
+  Daff:
+    fasta: 
+    gtf:
+  Dazt:
+    fasta:
+    gtf:
+
+# Path to a folder where final files will be written.
+OUT_DIR: 
+CUSTOM:
+
+# Path to database files and trinotate file.
+SQLITE: '/home/labshare/scripts/snakemake_pipelines/annotation/multiple_genomes_trinotate/example.sqlite'
+UNIPROT: '/home/labshare/data/databases/trinotate_databases/uniprot_sprot.pep'
+PFAM: '/home/labshare/data/databases/trinotate_databases/Pfam-A.hmm'
+
+# Path to scripts
+SIGNALP_SCRIPT: 
+RNAMMER: 
+RNAMMER_SCRIPT: 
+TRINOTATE_IMAGE: 
+TRINOTATE_SCRIPT: 
+TRINOTATE_EXTRACT:
