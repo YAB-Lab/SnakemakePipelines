@@ -1,0 +1,15 @@
+# Path to PacBio genome assembly
+genome: '/home/labshare/data/genomes/virilis_group/novamexicana/DnovRS2.1/Muller/DnovPacBio_ncbi_muller.fasta'
+# rep_lib: '/home/yahmed/Research/YABLab/Hybrid_Male_Sterility/Repeat_RNASeq/TE_libs/Dvir_TElib.fa'
+
+repeatmasker:
+  mode: "lib"   # or "species"
+  lib: "/home/yahmed/Research/YABLab/Hybrid_Male_Sterility/Repeat_RNASeq/TE_libs/Dvir_TElib.fa"
+  species: "drosophila"
+
+# set output dir
+OUT_DIR: '/home/labshare/scripts/snakemake_pipelines/assembly/Y_chrom_finder/test_output'
+
+# Path to a JSON file with DNAseq samples and their corresponding FASTQ files.
+FEMALE_SAMPLES_JSON: '/home/labshare/scripts/snakemake_pipelines/assembly/Y_chrom_finder/female_samples_pe.json'
+MALE_SAMPLES_JSON: '/home/labshare/scripts/snakemake_pipelines/assembly/Y_chrom_finder/male_samples_pe.json'
