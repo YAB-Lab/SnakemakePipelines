@@ -1,2 +1,0 @@
-SyntaxError in file /home/labshare/scripts/snakemake_pipelines/assembly/polishing_with_bwa_and_pilon/Snakefile, line 475:
-positional argument follows keyword argument
