@@ -1,12 +1,12 @@
 ### Instructions:
 
-To run the RNA-Seq pipelines, edit the `config.yml` file with input genome/gtf files and a JSON file of the smaples. You can create the JSON samples file using the `make_json_samples` script like so:
+To run the RNA-Seq pipelines, edit the `config.yml` file with input genome/gtf files and a JSON file of the smaples. You can create the JSON samples file using the `make_json_sample` script like so:
 
 ```
-make_json_samples.py /path/to/fastq/directory/*fq.gz
+make_json_sample.py /path/to/fastq/directory/*fq.gz
 ```
 
-(`make_json_samples.py` can be found [here](https://github.com/YAB-Lab/SnakemakePipeline/make_json_samples.py))
+(`make_json_sample.py` can be found [here](https://github.com/YAB-Lab/SnakemakePipeline/make_json_sample.py))
 
 
 FastQ files must have the filename format:
