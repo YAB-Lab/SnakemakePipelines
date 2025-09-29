@@ -13,7 +13,7 @@ FastQ files must have the filename format:
 
 <sample_name>.R1.fastq.gz or <sample_name>.R1.fq.gz
 
-`<sample_name>` should now include any periods.
+`<sample_name>` should not include any periods.
 
 ### Running the pipeline:
 
