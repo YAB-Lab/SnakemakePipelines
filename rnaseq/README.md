@@ -6,7 +6,7 @@ To run the RNA-Seq pipelines, edit the `config.yml` file with input genome/gtf f
 make_json_sample.py /path/to/fastq/directory/*fq.gz
 ```
 
-(`make_json_sample.py` can be found [here](https://github.com/YAB-Lab/SnakemakePipelines/make_json_sample.py))
+(`make_json_sample.py` can be found on the main repository page)
 
 
 FastQ files must have the filename format:
