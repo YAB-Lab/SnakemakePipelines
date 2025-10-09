@@ -138,77 +138,77 @@ rule fastqc:
 ##--------------------------------------------------------------------------------------##
 ##--------------------------------------------------------------------------------------##
 
-# rule hs2_extract_exons_ss:
-#     input:
-#         gtf = lambda wildcards: config['genomes'][wildcards.genome]['gtf']
-#     output:
-#         exon = join(OUT_DIR, 'hs2_index', '{genome}', 'exon.txt'),
-#         ss = join(OUT_DIR, 'hs2_index', '{genome}', 'ss.txt')
-#     benchmark:
-#         join(OUT_DIR, 'Benchmarks', 'hisat2_index', '{genome}_exons_ss.benchmark.tsv')
-#     threads: 
-#         4
-#     conda:
-#         'envs/rnaseq_yablab.yml'
-#     shell:
-#         'hisat2_extract_exons.py {input.gtf} > {output.exon}'
-#         ' && hisat2_extract_splice_sites.py {input.gtf} > {output.ss}'
+rule hs2_extract_exons_ss:
+    input:
+        gtf = lambda wildcards: config['genomes'][wildcards.genome]['gtf']
+    output:
+        exon = join(OUT_DIR, 'hs2_index', '{genome}', 'exon.txt'),
+        ss = join(OUT_DIR, 'hs2_index', '{genome}', 'ss.txt')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'hisat2_index', '{genome}_exons_ss.benchmark.tsv')
+    threads: 
+        4
+    conda:
+        'envs/rnaseq_yablab.yml'
+    shell:
+        'hisat2_extract_exons.py {input.gtf} > {output.exon}'
+        ' && hisat2_extract_splice_sites.py {input.gtf} > {output.ss}'
 
 ##--------------------------------------------------------------------------------------##
 ##--------------------------------------------------------------------------------------##
 
-# rule hisat2_index:
-#     input:
-#         exon = join(OUT_DIR, 'hs2_index', '{genome}', 'exon.txt'),
-#         ss = join(OUT_DIR, 'hs2_index', '{genome}', 'ss.txt'),
-#         fasta = lambda wildcards: config['genomes'][wildcards.genome]['fasta']
-#     output:
-#         directory(join(OUT_DIR, 'hs2_index', 'index_{genome}'))
-#     params:
-#         prefix = join(OUT_DIR, 'hs2_index', 'index_{genome}/{genome}'),
-#         extra = lambda wildcards, input: f"--exon {input.exon} --ss {input.ss}"
-#     log:
-#         join(OUT_DIR, 'Logs', 'hisat2_index', '{genome}.log')
-#     benchmark:
-#         join(OUT_DIR, 'Benchmarks', 'hisat2_index', '{genome}.benchmark.tsv')
-#     threads: 
-#         4
-#     wrapper:
-#         "v3.12.1/bio/hisat2/index"
+rule hisat2_index:
+    input:
+        exon = join(OUT_DIR, 'hs2_index', '{genome}', 'exon.txt'),
+        ss = join(OUT_DIR, 'hs2_index', '{genome}', 'ss.txt'),
+        fasta = lambda wildcards: config['genomes'][wildcards.genome]['fasta']
+    output:
+        directory(join(OUT_DIR, 'hs2_index', 'index_{genome}'))
+    params:
+        prefix = join(OUT_DIR, 'hs2_index', 'index_{genome}/{genome}'),
+        extra = lambda wildcards, input: f"--exon {input.exon} --ss {input.ss}"
+    log:
+        join(OUT_DIR, 'Logs', 'hisat2_index', '{genome}.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'hisat2_index', '{genome}.benchmark.tsv')
+    threads: 
+        4
+    wrapper:
+        "v3.12.1/bio/hisat2/index"
 
 ##--------------------------------------------------------------------------------------##
 ##--------------------------------------------------------------------------------------##
 
-# rule hisat2_align:
-#     input:
-#         reads = [join(OUT_DIR, 'trimmed_reads', '{sample}.1.fq.gz'), join(OUT_DIR, 'trimmed_reads', '{sample}.2.fq.gz')],
-#         idx = join(OUT_DIR, 'hs2_index', 'index_{genome}')
-#     output:
-#         bam = temp(join(OUT_DIR, 'HISAT-2', '{genome}', '{sample}_{genome}.hisat2.bam'))
-#     log:
-#         join(OUT_DIR, 'Logs', 'hisat2', 'hisat2_{sample}_{genome}.log')
-#     benchmark:
-#         join(OUT_DIR, 'Benchmarks', 'hisat2', 'hisat2_{sample}_{genome}.benchmark.tsv')
-#     params:
-#         extra=config["hisat2_params"]["extra"].format(sample="{sample}")
-#     threads: 8
-#     wrapper:
-#         "v3.12.1/bio/hisat2/align"
+rule hisat2_align:
+    input:
+        reads = [join(OUT_DIR, 'trimmed_reads', '{sample}.1.fq.gz'), join(OUT_DIR, 'trimmed_reads', '{sample}.2.fq.gz')],
+        idx = join(OUT_DIR, 'hs2_index', 'index_{genome}')
+    output:
+        bam = temp(join(OUT_DIR, 'HISAT-2', '{genome}', '{sample}_{genome}.hisat2.bam'))
+    log:
+        join(OUT_DIR, 'Logs', 'hisat2', 'hisat2_{sample}_{genome}.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'hisat2', 'hisat2_{sample}_{genome}.benchmark.tsv')
+    params:
+        extra=config["hisat2_params"]["extra"].format(sample="{sample}")
+    threads: 8
+    wrapper:
+        "v3.12.1/bio/hisat2/align"
 
 
 ##--------------------------------------------------------------------------------------##
 ##--------------------------------------------------------------------------------------##
 
-# rule samtools_sort:
-#     input:
-#         join(OUT_DIR, 'HISAT-2', '{genome}', '{sample}_{genome}.hisat2.bam')
-#     output:
-#         temp(join(OUT_DIR, 'HISAT-2', '{genome}', '{sample}_{genome}.csorted.hisat2.bam'))
-#     params:
-#         extra="-m 4G",
-#     threads: 8
-#     wrapper:
-#         "v3.12.1/bio/samtools/sort"
+rule samtools_sort:
+    input:
+        join(OUT_DIR, 'HISAT-2', '{genome}', '{sample}_{genome}.hisat2.bam')
+    output:
+        temp(join(OUT_DIR, 'HISAT-2', '{genome}', '{sample}_{genome}.csorted.hisat2.bam'))
+    params:
+        extra="-m 4G",
+    threads: 8
+    wrapper:
+        "v3.12.1/bio/samtools/sort"
 
 ##--------------------------------------------------------------------------------------##
 ##--------------------------------------------------------------------------------------##
@@ -233,64 +233,64 @@ rule qualimap:
 ##--------------------------------------------------------------------------------------##
 ##--------------------------------------------------------------------------------------##
 
-# rule stringtie:
-#     input:
-#         bam = join(OUT_DIR, 'HISAT-2', '{genome}', '{sample}_{genome}.csorted.hisat2.bam')
-#     output:
-#         asmbly = temp(join(OUT_DIR, 'StringTie', '{genome}', '{sample}_{genome}.gtf'))
-#     params:
-#         gtf = lambda wildcards: config['genomes'][wildcards.genome]['gtf']
-#     log:
-#         join(OUT_DIR, 'Logs', 'stringtie', 'stringtie_{sample}_{genome}.log')
-#     benchmark:
-#         join(OUT_DIR, 'Benchmarks', 'stringtie', 'stringtie_{sample}_{genome}.benchmark.tsv')
-#     threads:
-#         8
-#     resources:
-#         mem_mb=16000
-#     message:
-#         """--- Assembling transcripts for sample {wildcards.sample} with StringTie """
-#     conda:
-#         'envs/rnaseq_yablab.yml'
-#     shell:
-#         'stringtie'
-#                 ' {input.bam}'
-#                 ' -p 8'
-#                 ' -G {params.gtf}'
-#                 ' -o {output.asmbly}'
-#                 ' -l {wildcards.sample} > {log} 2>&1'
+rule stringtie:
+    input:
+        bam = join(OUT_DIR, 'HISAT-2', '{genome}', '{sample}_{genome}.csorted.hisat2.bam')
+    output:
+        asmbly = temp(join(OUT_DIR, 'StringTie', '{genome}', '{sample}_{genome}.gtf'))
+    params:
+        gtf = lambda wildcards: config['genomes'][wildcards.genome]['gtf']
+    log:
+        join(OUT_DIR, 'Logs', 'stringtie', 'stringtie_{sample}_{genome}.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'stringtie', 'stringtie_{sample}_{genome}.benchmark.tsv')
+    threads:
+        8
+    resources:
+        mem_mb=16000
+    message:
+        """--- Assembling transcripts for sample {wildcards.sample} with StringTie """
+    conda:
+        'envs/rnaseq_yablab.yml'
+    shell:
+        'stringtie'
+                ' {input.bam}'
+                ' -p 8'
+                ' -G {params.gtf}'
+                ' -o {output.asmbly}'
+                ' -l {wildcards.sample} > {log} 2>&1'
 
 ##--------------------------------------------------------------------------------------##
 ##--------------------------------------------------------------------------------------##
 
-# rule merge_assemblies:
-#     input:
-#         assemblies = expand(join(OUT_DIR, 'StringTie', '{genome}', '{sample}_{genome}.gtf'), sample = SAMPLES, genome = config['genomes'])
-#     output:
-#         asmbly = join(OUT_DIR, 'StringTie', '{genome}', 'stringtie_merged.gtf'),
-#         geneTransMap = join(OUT_DIR, 'StringTie', '{genome}', 'stringtie_merged_gene_trans_map')
-#     params:
-#         gtf = lambda wildcards: config['genomes'][wildcards.genome]['gtf']
-#     log:
-#         join(OUT_DIR, 'Logs', 'stringtie', 'st_mrg_{genome}.log')
-#     benchmark:
-#         join(OUT_DIR, 'Benchmarks', 'stringtie', 'st_mrg_{genome}.benchmark.tsv')
-#     threads:
-#         8
-#     resources:
-#         mem_mb=16000
-#     message:
-#         """--- Merging StringTie transcripts for genome mapping {wildcards.genome}"""
-#     conda:
-#         'envs/rnaseq_yablab.yml'
-#     shell:
-#         'ls -1 ' + join(OUT_DIR, 'StringTie', '{wildcards.genome}', '*.gtf') + ' > ' + join(OUT_DIR, 'StringTie', '{wildcards.genome}', 'assemblies.txt') + 
-#         ' && stringtie'
-#                 ' --merge'
-#                 ' -p 8'
-#                 ' -G {params.gtf}'
-#                 ' -o {output.asmbly} ' + join(OUT_DIR, 'StringTie', '{wildcards.genome}', 'assemblies.txt') +
-#         ' && awk \'{{if ($3 == "transcript") print $10"\t"$12}}\' {output.asmbly} | sed "s/;//g" | sed "s/\\\"//g" | sort -u > {output.geneTransMap}'
+rule merge_assemblies:
+    input:
+        assemblies = expand(join(OUT_DIR, 'StringTie', '{genome}', '{sample}_{genome}.gtf'), sample = SAMPLES, genome = config['genomes'])
+    output:
+        asmbly = join(OUT_DIR, 'StringTie', '{genome}', 'stringtie_merged.gtf'),
+        geneTransMap = join(OUT_DIR, 'StringTie', '{genome}', 'stringtie_merged_gene_trans_map')
+    params:
+        gtf = lambda wildcards: config['genomes'][wildcards.genome]['gtf']
+    log:
+        join(OUT_DIR, 'Logs', 'stringtie', 'st_mrg_{genome}.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'stringtie', 'st_mrg_{genome}.benchmark.tsv')
+    threads:
+        8
+    resources:
+        mem_mb=16000
+    message:
+        """--- Merging StringTie transcripts for genome mapping {wildcards.genome}"""
+    conda:
+        'envs/rnaseq_yablab.yml'
+    shell:
+        'ls -1 ' + join(OUT_DIR, 'StringTie', '{wildcards.genome}', '*.gtf') + ' > ' + join(OUT_DIR, 'StringTie', '{wildcards.genome}', 'assemblies.txt') + 
+        ' && stringtie'
+                ' --merge'
+                ' -p 8'
+                ' -G {params.gtf}'
+                ' -o {output.asmbly} ' + join(OUT_DIR, 'StringTie', '{wildcards.genome}', 'assemblies.txt') +
+        ' && awk \'{{if ($3 == "transcript") print $10"\t"$12}}\' {output.asmbly} | sed "s/;//g" | sed "s/\\\"//g" | sort -u > {output.geneTransMap}'
 
 ##--------------------------------------------------------------------------------------##
 ##--------------------------------------------------------------------------------------##
