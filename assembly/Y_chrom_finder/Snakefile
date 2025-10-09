@@ -132,16 +132,16 @@ rule filter_female_reads_quality:
     conda:
         'envs/Yfinder.yml'
     shell:
-        'zcat {input.fastq1} {input.fastq2} |'
+        'zcat {input.fastq1} {input.fastq2} > temp_female.fastq && '
                 ' jellyfish count'
                 ' -m 15'
                 ' -o {output}'
                 ' -c 4'
-                ' -s 10G'
-                ' -t 4'
+                ' -s 300M'
+                ' -t 12'
                 ' --canonical'
-                ' --min-qual-char=5' 
-                ' > {log} 2>&1'
+                ' --min-qual-char=5'
+                ' temp_female.fastq && rm temp_female.fastq'
 
 ##--------------------------------------------------------------------------------------##
 ##--------------------------------------------------------------------------------------##
@@ -210,17 +210,19 @@ rule filter_male_reads_quality:
         """--- filtering male Illumina short reads and extract k-mers at Phred score of 20 """
     conda:
         'envs/Yfinder.yml'
+    resources:
+        mem_mb=12000
     shell:
-        'zcat {input.fastq1} {input.fastq2} |'
+        'zcat {input.fastq1} {input.fastq2} > temp_male.fastq && '
                 ' jellyfish count'
                 ' -m 15'
                 ' -o {output}'
                 ' -c 4'
-                ' -s 10G'
-                ' -t 4'
+                ' -s 300M'
+                ' -t 12'
                 ' --canonical'
-                ' --min-qual-char=5' 
-                ' > {log} 2>&1'
+                ' --min-qual-char=5'
+                ' temp_male.fastq && rm temp_male.fastq'
 
 ##--------------------------------------------------------------------------------------##
 ##--------------------------------------------------------------------------------------##
@@ -522,9 +524,9 @@ rule coverage_female:
     conda:
         'envs/Yfinder.yml'
     shell: 
-        'genomeCoverageBed '                                     
-                ' -ibam {input.bam} '   
-                ' -max 50 '
+        'genomeCoverageBed'
+                ' -ibam {input.bam}'
+                # ' -max 50'
                 ' > {output.bcov}'
                 ' 2> {log}'
 
@@ -545,9 +547,9 @@ rule coverage_male:
     conda:
         'envs/Yfinder.yml'
     shell: 
-        'genomeCoverageBed '                                     
-                ' -ibam {input.bam} '   
-                ' -max 50 '
+        'genomeCoverageBed'         
+                ' -ibam {input.bam}'   
+                # ' -max 50'
                 ' > {output.bcov}'
                 ' 2> {log}'
 
