@@ -35,7 +35,6 @@ configfile: 'config.yml'
 # Full path to a folder where final output files will be deposited.
 OUT_DIR = config['OUT_DIR']
 GENOME = config['genome']
-REFERENCE = config['reference']
 
 # DNAseq Samples and their corresponding filenames.
 # paired-end:
@@ -52,7 +51,7 @@ if not os.path.exists(OUT_DIR):
 ## Final expected output(s)
 rule all:
     input:
-        join(OUT_DIR, "mummer", "ragtag_vs_ref.png")
+        join(OUT_DIR, 'pilon_r3', 'polished_r3.fasta')
 
 ##--------------------------------------------------------------------------------------##
 ##--------------------------------------------------------------------------------------##
@@ -416,103 +415,27 @@ rule pilon_r3:
 ##--------------------------------------------------------------------------------------##
 ##--------------------------------------------------------------------------------------##
 
-rule ragtag_scaffolding:
-    input:
-        fasta = join(OUT_DIR, 'pilon_r3', 'polished_r3.fasta')
-    params:
-        ref = REFERENCE
-    output:
-        polished = join(OUT_DIR, 'ragtag_output', 'ragtag.scaffold.fasta')
-    log:
-        join(OUT_DIR, 'Logs', 'ragtag', 'ragtag.log')
-    benchmark:
-        join(OUT_DIR, 'Benchmarks', 'ragtag', 'ragtag_benchmark.tsv')
-    message:
-        """--- Scaffolding polished assembly with RagTag."""
-    threads:
-        24
-    resources:
-        mem_mb=128000
-    conda:
-        'envs/RagTag.yml'
-    shell:
-        'ragtag_scaffold.py'
-            ' -r'
-            ' -o ' + join(OUT_DIR, 'ragtag_output') +
-            ' {params.ref}'
-            ' {input.fasta}'
-            ' > {log} 2>&1' 
+# rule quast_eval:
+#     input:
+#         assembly = join(OUT_DIR, 'ragtag_output', 'ragtag.scaffold.fasta'),
+#         reference = REFERENCE
+#         # gff = config.get("gff", None)
+#     output:
+#         html = directory(join(OUT_DIR, "quast_output"))
+#     params:
+#         extra = config.get("quast_extra", "")
+#     conda:
+#         "envs/pilon.yaml"
+#     threads: 
+#         4
+#     shell:
+#         """
+#         quast.py {input.assembly} \
+#         {('--reference ' + input.reference) if input.reference else ''} \
+#         {('--genes ' + input.gff) if input.gff else ''} \
+#         --threads {threads} \
+#         -o {output.html} \
+#         {params.extra}
+#         """
 ##--------------------------------------------------------------------------------------##
 ##--------------------------------------------------------------------------------------##
-
-rule quast_eval:
-    input:
-        assembly = join(OUT_DIR, 'ragtag_output', 'ragtag.scaffold.fasta'),
-        reference = REFERENCE
-        # gff = config.get("gff", None)
-    output:
-        html = directory(join(OUT_DIR, "quast_output"))
-    params:
-        extra = config.get("quast_extra", "")
-    conda:
-        "envs/pilon.yaml"
-    threads: 
-        4
-    shell:
-        """
-        quast.py {input.assembly} \
-        {('--reference ' + input.reference) if input.reference else ''} \
-        {('--genes ' + input.gff) if input.gff else ''} \
-        --threads {threads} \
-        -o {output.html} \
-        {params.extra}
-        """
-##--------------------------------------------------------------------------------------##
-##--------------------------------------------------------------------------------------##
-
-rule nucmer_align:
-    input:
-        ref = REFERENCE,
-        query = join(OUT_DIR, 'ragtag_output', 'ragtag.scaffold.fasta')
-    output:
-        delta = join(OUT_DIR, "mummer", "ragtag_vs_ref.delta")
-    conda:
-        "envs/RagTag.yml"
-    shell:
-        'mkdir -p ' + join(OUT_DIR, 'mummer') + 
-        ' && nucmer --prefix=' + join(OUT_DIR, 'mummer', 'ragtag_vs_ref') + ' {input.ref} {input.query}'
-
-##--------------------------------------------------------------------------------------##
-##--------------------------------------------------------------------------------------##
-
-rule delta_filter:
-    input:
-        delta = join(OUT_DIR, "mummer", "ragtag_vs_ref.delta")
-    output:
-        filtered = join(OUT_DIR, "mummer", "ragtag_vs_ref.filtered.delta")
-    conda:
-        "envs/RagTag.yml"
-    shell:
-        """
-        delta-filter -1 -i 95 -l 1000 {input.delta} > {output.filtered}
-        """
-
-##--------------------------------------------------------------------------------------##
-##--------------------------------------------------------------------------------------##
-
-rule mummerplot:
-    input:
-        delta = join(OUT_DIR, "mummer", "ragtag_vs_ref.filtered.delta")
-    output:
-        plot = join(OUT_DIR, "mummer", "ragtag_vs_ref.png")
-    conda:
-        "envs/RagTag.yml"
-    shell:
-        'mummerplot'
-        ' --fat'
-        ' --layout'
-        ' --filter'
-        ' --png' 
-        ' -p ' + join(OUT_DIR, "mummer", "ragtag_vs_ref") +
-        ' {input.delta}'
-
