@@ -32,10 +32,12 @@ dependencies:
   - bioconductor-zlibbioc
 
   # CLI bio tools
+  - alfred
   - bedtools
   - bowtie2
   - samtools
   - macs3
+  - multiqc
   - fastqc
   - picard
   - qualimap

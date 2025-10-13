@@ -25,7 +25,6 @@ def rstrip(text, suffix):
         return text
     return text[:len(text)-len(suffix)]
 
-## define environment variables
 
 ##--------------------------------------------------------------------------------------##
 ## Global config files:
@@ -33,21 +32,10 @@ def rstrip(text, suffix):
 
 configfile: 'config.yml'
 
-# with open("config.yml") as f:
-#     cfg = yaml.safe_load(f)
-
-# print(cfg["GROUPS"]["VV_15"])
-# ['VV_15_1', 'VV_15_2', 'VV_15_3']
-
-# Full path to an uncompressed FASTA file with all chromosome sequences.
 DNA = config['DNA']
-# INDEX = config['INDEX']
 GTF = config['GTF']
-# GSIZE = config['GSIZE']
 MITO_ID = config['MITO_ID']
-# PROMOTERS = config['PROMOTERS']
 GROUPS = config['GROUPS']
-# GROUPS = {k.strip(): [s.strip() for s in v] for k, v in GROUPS.items()}
 
 # Full path to a folder where final output files will be deposited.
 OUT_DIR = config['OUT_DIR']
@@ -61,13 +49,10 @@ SAMPLES = sorted(FILES.keys())
 if not os.path.exists(OUT_DIR):
             os.makedirs(OUT_DIR)
 
-
 ##--------------------------------------------------------------------------------------##
 ## RULES
 ##--------------------------------------------------------------------------------------##
 
-
-## Final expected output(s)
 rule all:
     input:
         join(OUT_DIR, 'MultiQC', 'multiqc_report.html'),
@@ -193,8 +178,6 @@ rule Bowtie2:
                 ' -x ' + join(OUT_DIR, 'reference', 'genome') +
                 ' -1 {input.r1}'
                 ' -2 {input.r2}'
-                # ' --k 10'
-                # ' --very-sensitive'
                 ') 2> {log.bt2}'
                 ' | samtools sort -n -@ 8 -o {output.nbam} -'
         ' && samtools sort --threads 8 -o {output.cbam} {output.nbam}'
@@ -232,7 +215,6 @@ rule qualimap:
 ##--------------------------------------------------------------------------------------##
 ##--------------------------------------------------------------------------------------##
 
-## Rule for mapping PE reads to the genome with Bowtie2
 rule bamMarkDuplicates:
     input:
         cbam = join(OUT_DIR, 'Bowtie2', '{sample}.csorted.bowtie2.bam')
@@ -451,14 +433,12 @@ rule compute_genome_size:
         reference = join(OUT_DIR, 'reference', 'genome.fasta')
     output:
         cs = join(OUT_DIR, 'reference', 'chrom_sizes.txt'),
-        # gs = join(OUT_DIR, 'reference', 'genome.size'),
         fai = join(OUT_DIR, 'reference', 'genome.fasta.fai')
     conda:
         'envs/atac_yablab.yml'
     shell:
         'samtools faidx {input.reference}'
         ' && cut -f1,2 {output.fai} > {output.cs}'
-        # ' && awk \'BEGIN{{sum=0}} {{sum+=$2}} END{{print sum}}\' {output.cs} > {output.gs}'
 
 
 
@@ -469,8 +449,6 @@ rule MACS_track:
     input:
         tag = join(OUT_DIR, 'Bowtie2', '{sample}.tagAlign.gz'),
         ginfo = join(OUT_DIR, 'reference', 'chrom_sizes.txt')
-    # params:
-    #     gs = GSIZE
     output:
         peaks = join(OUT_DIR, 'MACS', '{sample}', '{sample}_peaks.narrowPeak'),
         peaks_sub = join(OUT_DIR, 'MACS', '{sample}', '{sample}.narrowPeak.gz'),
@@ -548,8 +526,6 @@ rule MACS_track:
             ' {input.ginfo}'
             ' {output.bigwig_pval}'
         ' && rm ' + join(OUT_DIR, 'MACS', '{wildcards.sample}', '{wildcards.sample}_*.bdg') +
-            # ' ' + join(OUT_DIR, 'MACS', '{wildcards.sample}', '{wildcards.sample}_peaks.narrowPeak') +
-            # ' ' + join(OUT_DIR, 'MACS', '{wildcards.sample}', '{wildcards.sample}_peaks.xls') +
             ' ' + join(OUT_DIR, 'MACS', '{wildcards.sample}', '{wildcards.sample}_summits.bed') +
             ' {wildcards.sample}_FE.bdg'
             ' {wildcards.sample}.fc.signal.bedgraph*'
@@ -563,8 +539,6 @@ rule MACS_pool:
     input:
         tagAln_pool = join(OUT_DIR, 'Bowtie2', '{group}', '{group}.Rep0.tagAlign.gz'),
         ginfo = join(OUT_DIR, 'reference', 'chrom_sizes.txt')
-    # params:
-    #     gs = GSIZE
     output:
         peaks = join(OUT_DIR, 'MACS', '{group}', '{group}_peaks.narrowPeak'),
         peaks_sub = join(OUT_DIR, 'MACS', '{group}', '{group}.pool.narrowPeak.gz'),
@@ -641,8 +615,6 @@ rule MACS_pool:
             ' {input.ginfo}'
             ' {output.bigwig_pval}'
         ' && rm ' + join(OUT_DIR, 'MACS', '{wildcards.group}', '{wildcards.group}_*.bdg') +
-            # ' ' + join(OUT_DIR, 'MACS', '{wildcards.group}', '{wildcards.group}_peaks.narrowPeak') +
-            # ' ' + join(OUT_DIR, 'MACS', '{wildcards.group}', '{wildcards.group}_peaks.xls') +
             ' ' + join(OUT_DIR, 'MACS', '{wildcards.group}', '{wildcards.group}_summits.bed') +
             ' {wildcards.group}_FE.bdg'
             ' {wildcards.group}.fc.signal.bedgraph*'
@@ -651,8 +623,6 @@ rule MACS_pool:
 
 ##--------------------------------------------------------------------------------------##
 ##--------------------------------------------------------------------------------------##
-
-import os
 
 def generate_intersect_command(wildcards):
     group = wildcards.group
@@ -739,8 +709,6 @@ rule BAM_stats_Alfred:
         ' && CHRS=`cat {input.promoters} | cut -f 1 | sort -k1,1V -k2,2n | uniq | tr \'\n\' \' \'`'
                 ' && samtools view'
                 ' -@ 4'
-                # ' -F 1804'
-                # ' -f 2'
                 ' -q 30'
                 ' -b {input.dupremo}'
                 ' $CHRS'
@@ -808,10 +776,9 @@ rule peakCounts_MACS:
 rule multiQC:
     input:
         expand(join(OUT_DIR, 'Bowtie2', '{sample}.csorted.bowtie2.bam'), sample = SAMPLES),
-        # expand(join(OUT_DIR, 'Bowtie2', '{sample}', 'bamqc', 'qualimapReport.html'), sample = SAMPLES),
+        expand(join(OUT_DIR, 'Bowtie2', '{sample}', 'bamqc', 'qualimapReport.html'), sample = SAMPLES),
         expand(join(OUT_DIR, 'Bowtie2', '{sample}.insert_size_metrics.txt'), sample = SAMPLES),
         expand(join(OUT_DIR, 'fastQC', '{sample}.R2_fastqc.html'), sample = SAMPLES),
-        # expand(join(OUT_DIR, 'postFastQC', '{sample}.2_fastqc.html'), sample = SAMPLES),
         expand(join(OUT_DIR, 'trimmed_reads', '{sample}.2.fq.gz'), sample = SAMPLES),
         expand(join(OUT_DIR, 'MACS', '{sample}', '{sample}_peaks.narrowPeak'), sample = SAMPLES),
         expand(join(OUT_DIR, 'MACS', '{group}', '{group}.pool.narrowPeak.gz'), group = GROUPS)
@@ -827,9 +794,9 @@ rule multiQC:
     conda:
         'envs/atac_yablab.yml'
     shell:
-        'ls -1 ' + join(OUT_DIR) + 'Logs/Bowtie2/*.bowtie2.log > ' + join(OUT_DIR, 'MultiQC', 'summary_files.txt') +
-        # ' && ls -1 ' + join(OUT_DIR) + '/Bowtie2/*/bamqc | grep ":" | sed "s/://g" >> ' + join(OUT_DIR, 'MultiQC', 'summary_files.txt') +
-        ' && ls -1 ' + join(OUT_DIR) + '/trimmed_reads/*.cutadapt.log >> ' + join(OUT_DIR, 'MultiQC', 'summary_files.txt') +
+        'ls -1 ' + join(OUT_DIR) + '/Logs/Bowtie2/*.bowtie2.log > ' + join(OUT_DIR, 'MultiQC', 'summary_files.txt') +
+        ' && ls -1 ' + join(OUT_DIR) + '/Bowtie2/*/bamqc | grep ":" | sed "s/://g" >> ' + join(OUT_DIR, 'MultiQC', 'summary_files.txt') +
+        ' && ls -1 ' + join(OUT_DIR) + '/trimmed_reads/*.qc.txt >> ' + join(OUT_DIR, 'MultiQC', 'summary_files.txt') +
         ' && ls -1 ' + join(OUT_DIR) + '/fastQC/*fastqc.zip >> ' + join(OUT_DIR, 'MultiQC', 'summary_files.txt') +
         ' && ls -1 ' + join(OUT_DIR) + '/MACS/*/*xls >> ' + join(OUT_DIR, 'MultiQC', 'summary_files.txt') +
         ' && multiqc'
