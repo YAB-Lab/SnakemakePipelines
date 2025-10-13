@@ -1,3 +1,5 @@
+![Pipeline overview](./multiple_reference_genomes_with_gtf_PE/rulegraph.png)
+
 ### Instructions:
 
 To run the RNA-Seq pipelines, edit the `config.yml` file with input genome/gtf files and a JSON file of the smaples. You can create the JSON samples file using the `make_json_sample` script like so:
