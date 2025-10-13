@@ -1,11 +1,11 @@
 # Path to an uncompressed FASTA file with all chromosome sequences.
-DNA: ''
-INDEX: ''
-PROMOTERS: ''
+DNA: '' # genome FASTA file
+GTF: '' # genome annotation GTF file
+promoter:
+  upstream: 500
+  downstream: 500
 
-GINFO: ''
-GSIZE: ''
-MITO_ID: ''
+MITO_ID: '' # mitochondrial chromosome ID in the FASTA file
 
 # Path to a folder where final files will be written.
 OUT_DIR: ''
@@ -14,3 +14,16 @@ OUT_DIR: ''
 PE_SAMPLES_JSON: ''
 
 # Sample-to-replicate groupings:
+
+GROUPS: {
+        "sample1": [
+            "sample1_1",
+            "sample1_2",
+            "sample1_3"
+        ],
+        "sample2": [
+            "sample2_1",
+            "sample2_2",
+            "sample2_3"
+        ]
+    }
