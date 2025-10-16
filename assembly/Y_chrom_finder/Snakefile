@@ -53,8 +53,13 @@ def rstrip(text, suffixes):
 ## Final expected output(s)
 rule all: 
     input:
-        join(OUT_DIR, 'genome', os.path.basename(genome) + '.masked_female_male.final_result'),
-        join(OUT_DIR, 'MultiQC', 'multiqc_report.html')
+        join(OUT_DIR, 'genome', os.path.basename(genome) + '.masked_female_male.final_result.tsv'),
+        join(OUT_DIR, 'MultiQC', 'multiqc_report.html'),
+        # Build the per-sex extracts (so they exist to merge)
+        expand(join(OUT_DIR, "Bowtie2", "{sample}.female_bamqc", "coverage_per_contig.tsv"),
+               sample=female_SAMPLES),
+        expand(join(OUT_DIR, "Bowtie2", "{sample}.male_bamqc", "coverage_per_contig.tsv"),
+               sample=male_SAMPLES)
 
 ##--------------------------------------------------------------------------------------##
 ##--------------------------------------------------------------------------------------##
@@ -377,6 +382,92 @@ rule final_run:
         ' > {log} 2>&1'
         ' && rm female.trace.gz male.trace.gz gen_rep.gz'
 
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule ygs_final_result_to_tsv:
+    """
+    Parse YGS.pl final result text into a clean TSV.
+
+    Input:  {prefix}.final_result
+    Output: {prefix}.final_result.tsv
+    """
+    input:
+        join(OUT_DIR, 'genome', os.path.basename(genome) + '.masked_female_male.final_result')
+    output:
+        join(OUT_DIR, 'genome', os.path.basename(genome) + '.masked_female_male.final_result.tsv')
+    message:
+        "Converting {input} -> {output}"
+    run:
+        import re
+
+        in_path = str(input[0])
+        out_path = str(output[0])
+
+        with open(in_path, "r", errors="ignore") as f:
+            lines = f.readlines()
+
+        # Find the header line (starts at line 33 in file)
+        hdr_idx = None
+        for i, line in enumerate(lines):
+            if re.match(r"\s*GI\s+", line):
+                hdr_idx = i
+                break
+        if hdr_idx is None:
+            raise RuntimeError("Could not locate header line beginning with 'GI'.")
+
+        header_raw = lines[hdr_idx].strip()
+        header_cols = re.split(r"\s+", header_raw)
+
+        # Locate columns we need for calculation
+        try:
+            sc_k_i  = header_cols.index("SC_K")
+            vsc_k_i = header_cols.index("VSC_K")
+        except ValueError as e:
+            raise RuntimeError("Required columns SC_K and/or VSC_K not found in header.") from e
+
+        # Prepare output header: same header + new column at the end
+        out_header = header_cols + ["P_VCK_K"]
+
+        rows = []
+        # Data lines follow the header; they begin with '>' and have space-separated columns
+        for line in lines[hdr_idx + 1:]:
+            s = line.strip()
+            if not s:
+                continue
+            if not s.startswith(">"):
+                # stop reading table when the section ends
+                # (or continue if your files sometimes interleave comments)
+                if re.match(r"^\d+\s+contigs\.", s, flags=re.I) or s.lower().startswith("processing contig"):
+                    break
+                # skip non-table lines after the header
+                continue
+
+            parts = re.split(r"\s+", s)
+            # Remove leading '>' from contig (GI) name (requirement #1)
+            parts[0] = parts[0].lstrip(">")
+
+            # Compute P_VCK_K = 100 * (VSC_K / SC_K) (requirement #3)
+            try:
+                sc_k  = float(parts[sc_k_i])
+                vsc_k = float(parts[vsc_k_i])
+                pvck  = 0.0 if sc_k == 0 else round(100.0 * (vsc_k / sc_k), 1)
+            except Exception:
+                pvck = ""
+
+            # Ensure we only output as many columns as header, then append the new one
+            # (some tools can occasionally add trailing spaces)
+            parts = parts[:len(header_cols)]
+            parts_out = parts + [str(pvck)]
+
+            rows.append(parts_out)
+
+        # Write as TSV with single tabs (requirement #2)
+        with open(out_path, "w") as out:
+            out.write("\t".join(out_header) + "\n")
+            for r in rows:
+                out.write("\t".join(r) + "\n")
+
 
 ##--------------------------------------------------------------------------------------##
 ##--------------------------------------------------------------------------------------##
@@ -433,7 +524,7 @@ rule qualiMap_female:
     input:
         bam = join(OUT_DIR, 'Bowtie2', '{sample}.female.csorted.bowtie2.bam')
     output: 
-        bamqc = join(OUT_DIR, 'Bowtie2', '{sample}.female_bamqc', 'qualimapReport.html')
+        bamqc = join(OUT_DIR, 'Bowtie2', '{sample}.female_bamqc', 'genome_results.txt')
     log:
         join(OUT_DIR, 'Logs', '{sample}.female_bamqc.log')
     benchmark:
@@ -487,7 +578,7 @@ rule qualiMap_male:
     input:
         bam = join(OUT_DIR, 'Bowtie2', '{sample}.male.csorted.bowtie2.bam')
     output: 
-        bamqc = join(OUT_DIR, 'Bowtie2', '{sample}.male_bamqc', 'qualimapReport.html')
+        bamqc = join(OUT_DIR, 'Bowtie2', '{sample}.male_bamqc', 'genome_results.txt')
     log:
         join(OUT_DIR, 'Logs', '{sample}.male_bamqc.log')
     benchmark:
@@ -555,11 +646,163 @@ rule coverage_male:
 
 ##--------------------------------------------------------------------------------------##
 ##--------------------------------------------------------------------------------------##
-## Rule to collate fastQC and Bowtie2 outputs with multiQC
+
+rule qualimap_cov_per_contig_female:
+    """
+    Pull the 'Coverage per contig' section from Qualimap genome_results.txt
+    and write a clean TSV: GI, MEAN_COV, STD_COV
+    """
+    input:
+        qm = join(OUT_DIR, "Bowtie2", "{sample}.female_bamqc", "genome_results.txt")
+    output:
+        tsv = join(OUT_DIR, "Bowtie2", "{sample}.female_bamqc", "coverage_per_contig.tsv")
+    message:
+        "Extracting per-contig coverage from {input.qm} -> {output.tsv}"
+    run:
+        import re
+
+        def parse_cov(path):
+            rows = []
+            with open(path, "r", errors="ignore") as fh:
+                lines = fh.readlines()
+
+            # Find the section header (robust to >> count / spacing / case)
+            start = None
+            for i, line in enumerate(lines):
+                if re.search(r"coverage per contig", line, flags=re.I):
+                    start = i
+                    break
+            if start is None:
+                return rows  # empty
+
+            # Skip optional blank lines and optional header row
+            j = start + 1
+            while j < len(lines) and not lines[j].strip():
+                j += 1
+
+            # If the next line looks like a header (contains 'mean' and 'std'), skip it
+            if j < len(lines) and re.search(r"mean", lines[j], flags=re.I) and re.search(r"std", lines[j], flags=re.I):
+                j += 1
+
+            # Read data lines until a blank line or next section
+            while j < len(lines):
+                s = lines[j].rstrip("\n")
+                j += 1
+                if not s.strip():
+                    break
+                if s.strip().startswith(">"):
+                    # next section in Qualimap also starts with >>>>>>
+                    break
+
+                # Collapse funny spaces/tabs
+                parts = re.split(r"\t+|\s{2,}|\s+", s.strip())
+                if len(parts) < 3:
+                    continue
+
+                gi = parts[0].lstrip(">")
+                mean_cov = parts[-2]
+                std_cov  = parts[-1]
+
+                # Try to normalize to numeric strings with a few decimals when possible
+                def f3(x):
+                    try:
+                        return f"{float(x):.3f}"
+                    except Exception:
+                        return x
+                rows.append((gi, f3(mean_cov), f3(std_cov)))
+
+            return rows
+
+        rows = parse_cov(input.qm)
+
+        with open(output.tsv, "w") as out:
+            out.write("GI\tMEAN_COV\tSTD_COV\n")
+            for gi, mean_cov, std_cov in rows:
+                out.write(f"{gi}\t{mean_cov}\t{std_cov}\n")
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule qualimap_cov_per_contig_male:
+    """
+    Pull the 'Coverage per contig' section from Qualimap genome_results.txt
+    and write a clean TSV: GI, MEAN_COV, STD_COV
+    """
+    input:
+        qm = join(OUT_DIR, "Bowtie2", "{sample}.male_bamqc", "genome_results.txt")
+    output:
+        tsv = join(OUT_DIR, "Bowtie2", "{sample}.male_bamqc", "coverage_per_contig.tsv")
+    message:
+        "Extracting per-contig coverage from {input.qm} -> {output.tsv}"
+    run:
+        import re
+
+        def parse_cov(path):
+            rows = []
+            with open(path, "r", errors="ignore") as fh:
+                lines = fh.readlines()
+
+            # Find the section header (robust to >> count / spacing / case)
+            start = None
+            for i, line in enumerate(lines):
+                if re.search(r"coverage per contig", line, flags=re.I):
+                    start = i
+                    break
+            if start is None:
+                return rows  # empty
+
+            # Skip optional blank lines and optional header row
+            j = start + 1
+            while j < len(lines) and not lines[j].strip():
+                j += 1
+
+            # If the next line looks like a header (contains 'mean' and 'std'), skip it
+            if j < len(lines) and re.search(r"mean", lines[j], flags=re.I) and re.search(r"std", lines[j], flags=re.I):
+                j += 1
+
+            # Read data lines until a blank line or next section
+            while j < len(lines):
+                s = lines[j].rstrip("\n")
+                j += 1
+                if not s.strip():
+                    break
+                if s.strip().startswith(">"):
+                    # next section in Qualimap also starts with >>>>>>
+                    break
+
+                # Collapse funny spaces/tabs
+                parts = re.split(r"\t+|\s{2,}|\s+", s.strip())
+                if len(parts) < 3:
+                    continue
+
+                gi = parts[0].lstrip(">")
+                mean_cov = parts[-2]
+                std_cov  = parts[-1]
+
+                # Try to normalize to numeric strings with a few decimals when possible
+                def f3(x):
+                    try:
+                        return f"{float(x):.3f}"
+                    except Exception:
+                        return x
+                rows.append((gi, f3(mean_cov), f3(std_cov)))
+
+            return rows
+
+        rows = parse_cov(input.qm)
+
+        with open(output.tsv, "w") as out:
+            out.write("GI\tMEAN_COV\tSTD_COV\n")
+            for gi, mean_cov, std_cov in rows:
+                out.write(f"{gi}\t{mean_cov}\t{std_cov}\n")
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
 rule multiQC:
     input:
-        expand(join(OUT_DIR, 'Bowtie2', '{sample}.female_bamqc', 'qualimapReport.html'), sample = female_SAMPLES),
-        expand(join(OUT_DIR, 'Bowtie2', '{sample}.male_bamqc', 'qualimapReport.html'), sample = male_SAMPLES),
+        expand(join(OUT_DIR, 'Bowtie2', '{sample}.female_bamqc', 'genome_results.txt'), sample = female_SAMPLES),
+        expand(join(OUT_DIR, 'Bowtie2', '{sample}.male_bamqc', 'genome_results.txt'), sample = male_SAMPLES),
         expand(join(OUT_DIR, 'Bowtie2', '{sample}.male.coverage.txt'), sample = male_SAMPLES),
         expand(join(OUT_DIR, 'Bowtie2', '{sample}.female.coverage.txt'), sample = female_SAMPLES)
     output:
