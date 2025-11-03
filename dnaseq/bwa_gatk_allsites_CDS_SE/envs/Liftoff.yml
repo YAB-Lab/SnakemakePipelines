@@ -1,0 +1,19 @@
+name: Liftoff_min
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  # Core tool
+  - liftoff
+
+  # Aligners & I/O commonly used by liftoff
+  - minimap2
+  - pysam
+  - pyfaidx
+
+  # Python libs liftoff workflows frequently rely on
+  - biopython
+  - gffutils
+  - networkx
+  - numpy

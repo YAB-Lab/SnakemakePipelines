@@ -1,0 +1,59 @@
+name: DaGRP_min
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  # --- Core Python ---
+  - python
+  - pip
+  - numpy
+  - matplotlib
+  - plotly
+  - pyyaml
+  - requests
+  - rich
+  - tqdm
+
+  # --- Bioinformatics CLI tools ---
+  - bwa
+  - samtools
+  - htslib
+  - vcftools
+  - gffread
+  - vcflib
+  - fastqc
+  - multiqc
+  - picard
+  - qualimap
+  - openjdk
+  - openjdk=11        # or 17 is fine; 8 also works for qualimap
+  - fontconfig
+  - freetype
+  - fonts-conda-ecosystem
+  - font-ttf-dejavu-sans-mono
+  - font-ttf-ubuntu
+  - xorg-libx11
+  - xorg-libxrender
+  - xorg-libxext
+
+  # --- R + Bioconductor (core set for genomics IO and ranges) ---
+  - r-base
+  - bioconductor-biocgenerics
+  - bioconductor-biobase
+  - bioconductor-biostrings
+  - bioconductor-iranges
+  - bioconductor-genomeinfodb
+  - bioconductor-genomicalignments
+  - bioconductor-genomicranges
+  - bioconductor-rhtslib
+  - bioconductor-rsamtools
+  - bioconductor-rtracklayer
+  - bioconductor-summarizedexperiment
+  - bioconductor-matrixgenerics
+  - bioconductor-xvector
+  - bioconductor-zlibbioc
+
+  # --- Handy CLI utils ---
+  - jq
+  - yq

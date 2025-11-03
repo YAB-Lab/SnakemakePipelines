@@ -1,0 +1,14 @@
+# Path to an uncompressed FASTA file with all chromosome sequences.
+genomes:
+  species1:
+    fasta: ''
+    gtf: ''
+  species2:
+    fasta: ''
+    gtf: ''
+
+# Path to a folder where final files will be written.
+OUT_DIR: ''
+
+# Path to a JSON file with DNAseq samples and their corresponding FASTQ files.
+SE_SAMPLES_JSON: ''

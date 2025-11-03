@@ -1,0 +1,13 @@
+name: Delly2_min
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  # Core SV-calling tool
+  - delly
+
+  # BAM/CRAM + VCF essentials (remove if you truly don't need them)
+  - htslib
+  - samtools
+  - bcftools
