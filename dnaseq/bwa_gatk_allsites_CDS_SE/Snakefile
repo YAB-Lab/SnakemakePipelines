@@ -297,7 +297,7 @@ rule liftoff:
         'envs/Liftoff.yml'
     shell:
         'liftoff'
-            ' -g {input.gtf_db}'
+            ' -db {input.gtf_db}'
             ' -o {output.gtf}'
             ' -u {output.unmapped}'
             # ' -cds'
@@ -409,7 +409,7 @@ rule GATK_gDBImport:
     params:
         dna = lambda wildcards: config['genomes'][wildcards.genome]['fasta']
     output:
-        db_flag = join(OUT_DIR, 'VCF', 'BWA_GATK', '{genome}', 'all_sites', 'DBImport_complete')
+        db = directory(join(OUT_DIR, 'VCF', 'BWA_GATK', '{genome}', 'allsamples_genomicsdb'))
     log:
         join(OUT_DIR, 'Logs', 'VCF', '{genome}', 'DBImport.log')
     benchmark:
@@ -424,21 +424,20 @@ rule GATK_gDBImport:
         'envs/DaGRP.yml'
     shell:
         'vcf_list=$(ls ' + join(SCRATCH, 'VCF', 'BWA_GATK', '{wildcards.genome}', 'all_sites', '*', '*.vcf') + ' | while read l; do echo " -V "$l; done)'
-            ' && my_chr_list=$(grep ">" {params.dna} | sed "s/>//g" |  while read l; do echo " -L "$l; done)'
+            ' && my_chr_list=$(grep ">" {params.dna} | sed "s/>//g" |  sed "s/ .*//" | while read l; do echo " -L "$l; done)'
             ' && gatk GenomicsDBImport'
             ' $vcf_list'
             ' --genomicsdb-workspace-path'
-            ' allsamples_genomicsdb'
+            ' {output.db}'
             ' $my_chr_list'
-            ' > {log} 2>&1 && '
-        'touch {output.db_flag}'
+            ' > {log} 2>&1'
 
 ##--------------------------------------------------------------------------------------##
 ##--------------------------------------------------------------------------------------##
 
 rule GATK_GenotypeGVCFs:
     input:
-        db_flag = join(OUT_DIR, 'VCF', 'BWA_GATK', '{genome}', 'all_sites', 'DBImport_complete'),
+        db = join(OUT_DIR, 'VCF', 'BWA_GATK', '{genome}', 'allsamples_genomicsdb'),
         dna = lambda wildcards: config['genomes'][wildcards.genome]['fasta']
     output:
         vcf = join(OUT_DIR, 'VCF', 'BWA_GATK', '{genome}', 'all_sites', 'allsites.vcf.gz')
@@ -457,13 +456,13 @@ rule GATK_GenotypeGVCFs:
     shell:
         """
         # Extract chromosome names from the reference genome
-        chroms=$(grep ">" {input.dna} | sed 's/>//g')
+        chroms=$(grep ">" {input.dna} | sed 's/>//g' | sed 's/ .*//')
 
         # Loop through each chromosome and run GenotypeGVCFs
         for chr in $chroms; do
             gatk GenotypeGVCFs \
                 -R {input.dna} \
-                -V gendb://allsamples_genomicsdb \
+                -V gendb://{input.db} \
                 -all-sites \
                 -L $chr \
                 -O {output.vcf}.$chr.vcf.gz \

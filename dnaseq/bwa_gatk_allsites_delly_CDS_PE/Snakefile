@@ -451,10 +451,10 @@ rule liftoff:
         'envs/Liftoff.yml'
     shell:
         'liftoff'
-            ' -g {input.gtf_db}'
+            ' -db {input.gtf_db}'
             ' -o {output.gtf}'
             ' -u {output.unmapped}'
-            ' -cds'
+            # ' -cds'
             ' -dir ' + join(OUT_DIR, 'Liftoff', '{wildcards.genome}', '{wildcards.sample}', 'intermediate_files') +
             ' {input.fasta}'
             ' {input.dna}'
@@ -563,7 +563,7 @@ rule GATK_gDBImport:
     params:
         dna = lambda wildcards: config['genomes'][wildcards.genome]['fasta']
     output:
-        db_flag = join(OUT_DIR, 'VCF', 'BWA_GATK', '{genome}', 'all_sites', 'DBImport_complete')
+        db = directory(join(OUT_DIR, 'VCF', 'BWA_GATK', '{genome}', 'allsamples_genomicsdb'))
     log:
         join(OUT_DIR, 'Logs', 'VCF', '{genome}', 'DBImport.log')
     benchmark:
@@ -578,21 +578,20 @@ rule GATK_gDBImport:
         'envs/DaGRP.yml'
     shell:
         'vcf_list=$(ls ' + join(SCRATCH, 'VCF', 'BWA_GATK', '{wildcards.genome}', 'all_sites', '*', '*.vcf') + ' | while read l; do echo " -V "$l; done)'
-            ' && my_chr_list=$(grep ">" {params.dna} | sed "s/>//g" |  while read l; do echo " -L "$l; done)'
+            ' && my_chr_list=$(grep ">" {params.dna} | sed "s/>//g" |  sed "s/ .*//" | while read l; do echo " -L "$l; done)'
             ' && gatk GenomicsDBImport'
             ' $vcf_list'
             ' --genomicsdb-workspace-path'
-            ' allsamples_genomicsdb'
+            ' {output.db}'
             ' $my_chr_list'
-            ' > {log} 2>&1 && '
-        'touch {output.db_flag}'
+            ' > {log} 2>&1'
 
 ##--------------------------------------------------------------------------------------##
 ##--------------------------------------------------------------------------------------##
 
 rule GATK_GenotypeGVCFs:
     input:
-        db_flag = join(OUT_DIR, 'VCF', 'BWA_GATK', '{genome}', 'all_sites', 'DBImport_complete'),
+        db = join(OUT_DIR, 'VCF', 'BWA_GATK', '{genome}', 'allsamples_genomicsdb'),
         dna = lambda wildcards: config['genomes'][wildcards.genome]['fasta']
     output:
         vcf = join(OUT_DIR, 'VCF', 'BWA_GATK', '{genome}', 'all_sites', 'allsites.vcf.gz')
@@ -611,13 +610,13 @@ rule GATK_GenotypeGVCFs:
     shell:
         """
         # Extract chromosome names from the reference genome
-        chroms=$(grep ">" {input.dna} | sed 's/>//g')
+        chroms=$(grep ">" {input.dna} | sed 's/>//g' | sed 's/ .*//)
 
         # Loop through each chromosome and run GenotypeGVCFs
         for chr in $chroms; do
             gatk GenotypeGVCFs \
                 -R {input.dna} \
-                -V gendb://allsamples_genomicsdb \
+                -V gendb://{input.db} \
                 -all-sites \
                 -L $chr \
                 -O {output.vcf}.$chr.vcf.gz \
@@ -646,7 +645,7 @@ rule multiQC:
         expand(join(OUT_DIR, 'fastQC', '{sample}.R1_fastqc.html'), sample = SAMPLES),
         # expand(join(OUT_DIR, 'BWA', '{genome}', '{sample}', 'bamqc', 'qualimapReport.html'), sample = SAMPLES, genome = config['genomes']),
         expand(join(OUT_DIR, 'trimmed_reads', '{sample}.qc.txt'), sample = SAMPLES),
-        expand(join(OUT_DIR, 'Transcripts', '{genome}', '{sample}', '{sample}.CDS.fasta'), sample = SAMPLES, genome = config['genomes'])
+        expand(join(OUT_DIR, 'Consensus', '{genome}', '{sample}', '{sample}.fasta'), sample = SAMPLES, genome = config['genomes'])
     output:
         file = join(OUT_DIR, 'MultiQC', '{genome}', 'multiqc_report.html')
     log:
