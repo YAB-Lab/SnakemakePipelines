@@ -34,6 +34,15 @@ configfile: 'config.yml'
 ## Full path to a folder where final output files will be deposited.
 OUT_DIR = config['OUT_DIR']
 
+GENOMES = list(config["genomes"].keys())
+
+# All ordered pairs (source -> target), excluding self-pairs
+LIFT_PAIRS = [(src, tgt) for src in GENOMES for tgt in GENOMES if src != tgt]
+
+# Convenience lists for expand()
+SRC_LIST  = [src for src, tgt in LIFT_PAIRS]
+TGT_LIST  = [tgt for src, tgt in LIFT_PAIRS]
+
 ## Samples and their corresponding filenames.
 FILES = json.load(open(config['SAMPLES_JSON']))
 SAMPLES = sorted(FILES.keys())
@@ -56,7 +65,13 @@ if not os.path.exists(OUT_DIR):
 rule all:
     input:
         expand(join(OUT_DIR, 'abundances', '{genome}', 'stringtie_gene_counts_matrix.txt'), genome = config['genomes']),
-        join(OUT_DIR, 'MultiQC', 'multiqc_report.html')
+        join(OUT_DIR, 'MultiQC', 'multiqc_report.html'),
+        expand(
+            join(OUT_DIR, "gffcompare", "{source}_to_{target}", "gffcmp.stats"),
+            zip,
+            source=SRC_LIST,
+            target=TGT_LIST
+        )
 
 ##--------------------------------------------------------------------------------------##
 ##--------------------------------------------------------------------------------------##
@@ -91,6 +106,57 @@ rule cutadapt:
     wrapper:
         "v6.2.0/bio/cutadapt/se"
 
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule liftoff_gtf:
+    input:
+        tgt = lambda wc: config["genomes"][wc.target]["fasta"],
+        ref  = lambda wc: config["genomes"][wc.source]["fasta"],
+        ann = lambda wc: config["genomes"][wc.source]["gff"],
+    output:
+        main = join(OUT_DIR, "liftoff", "{source}_to_{target}.liftoff.gtf"),
+        unmapped = join(OUT_DIR, "liftoff", "{source}_to_{target}.unmapped.txt")
+    params:
+        extra=""
+    log:
+        join(OUT_DIR, "Logs", "liftoff", "liftoff_{source}_to_{target}.log")
+    benchmark:
+        join(OUT_DIR, "Benchmarks", "liftoff", "liftoff_{source}_to_{target}.benchmark.tsv")
+    threads: 8
+    wrapper:
+        "v3.1.0/bio/liftoff"
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule gffcompare_lifted_vs_native:
+    input:
+        ref_gtf = lambda wc: config["genomes"][wc.target]["gtf"],
+        qry_gtf = join(OUT_DIR, "liftoff", "{source}_to_{target}.liftoff.gtf"),
+    output:
+        # gffcompare produces several files with a prefix; use a directory + prefix pattern
+        stats   = join(OUT_DIR, "gffcompare", "{source}_to_{target}", "gffcmp.stats"),
+        tracking= join(OUT_DIR, "gffcompare", "{source}_to_{target}", "gffcmp.tracking"),
+    log:
+        join(OUT_DIR, "Logs", "gffcompare", "gffcompare_{source}_to_{target}.log")
+    benchmark:
+        join(OUT_DIR, "Benchmarks", "gffcompare", "gffcompare_{source}_to_{target}.benchmark.tsv")
+    threads: 4
+    conda:
+        "envs/gffcompare.yaml"
+    params:
+        extra = config.get("gffcompare_params", {}).get("extra", "")
+    shell:
+        r"""
+        mkdir -p $(dirname {output.stats})
+        gffcompare \
+            -r {input.ref_gtf} \
+            -o {OUT_DIR}/gffcompare/{wildcards.source}_to_{wildcards.target}/gffcmp \
+            {input.qry_gtf} \
+            {params.extra} \
+            &> {log}
+        """
 ##--------------------------------------------------------------------------------------##
 ##--------------------------------------------------------------------------------------##
 

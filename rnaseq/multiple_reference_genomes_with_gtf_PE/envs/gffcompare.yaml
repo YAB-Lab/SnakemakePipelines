@@ -1,0 +1,11 @@
+name: gffcompare
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - gffcompare
+  - gffread
+  - samtools
+  - bedtools
+  - zlib
