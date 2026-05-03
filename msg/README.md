@@ -19,7 +19,7 @@ modernizes everything around it.
 
 ```
 .
-├── Snakefile.v2          # modernized DAG (rename to Snakefile when ready)
+├── Snakefile             # modernized DAG (rename to Snakefile when ready)
 ├── config.yml            # all tunable parameters (paths + knobs)
 ├── workflow2.png         # rule graph
 ├── envs/
@@ -47,8 +47,8 @@ modernizes everything around it.
 
 ```bash
 conda activate snakemake
-snakemake -s Snakefile.v2 -n              # dry-run
-snakemake -s Snakefile.v2 --use-conda -c8 # execute
+snakemake -s Snakefile -n              # dry-run
+snakemake -s Snakefile --use-conda -c8 # execute
 ```
 
 All paths and knobs live in `config.yml`. The two parental references are
@@ -111,7 +111,7 @@ Everything previously hard-coded in scripts is now in `config.yml`:
 ## Notes on porting into the legacy repo
 
 - This bundle expects to sit alongside (or replace) the legacy `Snakefile`.
-  Rename `Snakefile.v2` → `Snakefile` once you're ready to retire v1.
+  Rename `Snakefile` → `Snakefile` once you're ready to retire v1.
 - `config.yml` keys overlap with the legacy config but add new sections
   (`extract_ref`, `bwa_mem`, expanded `fit_hmm`). Merge rather than overwrite
   if the legacy config has site-specific paths you want to keep.
