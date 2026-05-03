@@ -1,29 +1,43 @@
 # Path to an uncompressed FASTA file with all chromosome sequences.
-PARENT_1_DNA: '/home/yahmed/Research/YABLab/PMPZ_Reproductive_Isolation/QTL_data/whole_plate_result/parental_genomes/DameNanopore_SB0206_canu_MEonly.fasta'
-PARENT_2_DNA: '/home/yahmed/Research/YABLab/PMPZ_Reproductive_Isolation/QTL_data/whole_plate_result/parental_genomes/Dlum09_ME_only.fasta'
+PARENT_1_DNA: '/home/yahmed/GitHub_Repositories/snkmk_msg/parental_genomes/DameNanopore_SB0206_canu_MEonly.fasta'
+PARENT_2_DNA: '/home/yahmed/GitHub_Repositories/snkmk_msg/parental_genomes/Dlum09_ME_only.fasta'
 
 # Path to a folder where final files will be written.
-OUT_DIR: '/home/yahmed/Research/YABLab/PMPZ_Reproductive_Isolation/QTL_data/Ame_Lum_Backcross_Females/MSG/OUTPUT/'
-BASE_MSG: '/home/yahmed/GitHub_Repositories/msg/'
-SAMTOOLS_PATH: 'samtools'
+OUT_DIR: '/home/yahmed/GitHub_Repositories/snkmk_msg/OUTPUT/'
 SCRIPTS_DIR: '/home/yahmed/GitHub_Repositories/snkmk_msg/scripts'
-PHENO_FILE: '/home/yahmed/Research/YABLab/PMPZ_Reproductive_Isolation/QTL_data/Ame_Lum_Backcross_Females/MSG/pheno_data.tsv'
-READ_THRESHOLD: '100000'
+PHENO_FILE: '/home/yahmed/GitHub_Repositories/snkmk_msg/pool1_high_pheno.tsv'
 
 
 # Path to a JSON file with DNAseq samples and their corresponding FASTQ files.
-PE_DNA_SAMPLES_JSON: '/home/yahmed/Research/YABLab/PMPZ_Reproductive_Isolation/QTL_data/Ame_Lum_Backcross_Females/MSG/samples_pe.json'
+PE_DNA_SAMPLES_JSON: '/home/yahmed/GitHub_Repositories/snkmk_msg/samples_pe.json'
+
+# Reference-allele extraction (extract_ref_alleles.py).
+extract_ref:
+  chroms: "all"          # comma-separated contig names, or "all"
+  repeat_threshold: 6    # min AS-XS difference; mate is dropped if either parent's AS-XS <= threshold
+
+# write_hmm_data.R per-contig HMM input builder.
+write_hmm:
+  chroms: "all"          # comma-separated contig names, or "all"
+
+# BWA-MEM tuning flags (passed verbatim to `bwa mem`).
+# See `bwa mem -h` for full list. Common flags:
+#   -M    mark shorter split hits as secondary (Picard compat)
+#   -K N  process N input bases per batch (deterministic output)
+#   -k N  minimum seed length (default 19)
+bwa_mem:
+  extra: "-M"
 
 # Example configuration file (config.yaml)
 fit_hmm:
-  sex: "F"
+  sex: "female"
   deltapar1: 0.1
   deltapar2: 0.1
-  recRate: 5
-  rfac: 1
+  recRate: 3
+  rfac: 0.001
   chroms: "all"
   sexchrom: "Chr_X"
-  prior: "0.0,0.5,0.5"
+  prior: "0.25,0.5,0.25"
   theta: 1
   gff_thresh_conf: 0.95
   one_site_per_contig: 1
@@ -31,4 +45,15 @@ fit_hmm:
   pepthresh: "null"
   use_filter_hmmdata_pl: 0
   diffac: 0.01
-  cross: bc
+  cross: f2
+  # ancestry_probs.R knobs (reuses chroms, chroms2plot, diffac above)
+  thinfac: 1
+  pna_thresh: 0.03
+  plot_correlation_matrix: 0   # 0/1; gates the heatmap+thinning branch (heavy, off by default)
+  breakpoint_widths: 0         # 0/1; sources scripts/breakpoint-widths.R when 1
+  # pull_thin knobs
+  indivs: "all"                # "all" or comma-separated subset of individual IDs
+  num_markers: null            # int or null; if set, overrides diffac with N markers/chrom
+  ignore_nan: 0                # 0/1; if 1, skip NaN-as-change handling during thinning
+  autosome_prior: 0.5          # NA replacement value for autosomal markers
+  x_prior: 0.5                 # NA replacement value for X-chrom markers

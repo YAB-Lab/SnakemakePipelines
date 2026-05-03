@@ -1,0 +1,7 @@
+name: r_msg_v2
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - r-base>=4.3
+  - r-optparse

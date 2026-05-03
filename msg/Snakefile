@@ -1,110 +1,125 @@
 """
 Author: Y. Ahmed-Braimah
---- Snakemake workflow for PacBio genome annotation
---- and genomic analysis
+--- Modernized Snakemake workflow for the MSG (multiplexed shotgun
+    genotyping) pipeline.
+--- Built up rule by rule from the original Snakefile.
 """
 
 import json
 import os
 from os.path import join, basename, dirname, isfile
-from os import getcwd, listdir
-from subprocess import check_output
-import subprocess
 
 ##--------------------------------------------------------------------------------------##
-## Functions
-##--------------------------------------------------------------------------------------##
-
-# To print process messages
-def message(x):
-  print()
-
-# To remove suffix from a string
-def rstrip(text, suffix):
-    if not text.endswith(suffix):
-        return text
-    return text[:len(text)-len(suffix)]
-
-## define environment variables
-
-##--------------------------------------------------------------------------------------##
-## Global config files:
+## Global config
 ##--------------------------------------------------------------------------------------##
 
 configfile: 'config.yml'
 
-# Full path to an uncompressed FASTA file with all chromosome sequences.
-PARENT_1_DNA = config['PARENT_1_DNA']
-PARENT_2_DNA = config['PARENT_2_DNA']
+OUT_DIR       = config['OUT_DIR']
+SCRIPTS_DIR   = config['SCRIPTS_DIR']
+PHENO_FILE    = config['PHENO_FILE']
 
-# Full path to a folder where final output files will be deposited.
-OUT_DIR = config['OUT_DIR']
-BASE_MSG = config['BASE_MSG']
-SCRIPTS_DIR = config['SCRIPTS_DIR']
-PHENO_FILE = config['PHENO_FILE']
-SAMTOOLS_PATH = config['SAMTOOLS_PATH']
+# Parental reference genomes (uncompressed FASTA). Positional naming
+# (par1/par2) keeps the pipeline parent-agnostic — downstream rules iterate
+# over PARENTS.keys() rather than hard-coding genome names.
+PARENTS = {
+    'par1': config['PARENT_1_DNA'],
+    'par2': config['PARENT_2_DNA'],
+}
 
-
-FILES = json.load(open(config['PE_DNA_SAMPLES_JSON']))
+FILES   = json.load(open(config['PE_DNA_SAMPLES_JSON']))
 SAMPLES = sorted(FILES.keys())
 
+CROSS = config['fit_hmm']['cross'].lower()  # 'bc' or 'f2'
+F2    = (CROSS == 'f2')
 
-## Create the final output directory if it doesn't already exist
-if not os.path.exists(OUT_DIR):
-            os.makedirs(OUT_DIR)
+os.makedirs(OUT_DIR, exist_ok=True)
 
-##--------------------------------------------------------------------------------------##--------------------------------------------------------------------------------------
-# _____ _             _               _               _
-#|  ___(_)_ __   __ _| |   ___  _   _| |_ _ __  _   _| |_ ___
-#| |_  | | '_ \ / _` | |  / _ \| | | | __| '_ \| | | | __/ __|
-#|  _| | | | | | (_| | | | (_) | |_| | |_| |_) | |_| | |_\__ \
-#|_|   |_|_| |_|\__,_|_|  \___/ \__,_|\__| .__/ \__,_|\__|___/
-#                                        |_|
 ##--------------------------------------------------------------------------------------##
-##--------------------------------------------------------------------------------------
+## Final targets
+##--------------------------------------------------------------------------------------##
 
-## Final expected output(s)
 rule all:
     input:
+        # expand(join(OUT_DIR, 'parents', '{parent}', '{parent}.fa.bwt'),
+        #        parent=PARENTS.keys()),
+        # expand(join(OUT_DIR, 'fastQC',      '{sample}.R1_fastqc.html'), sample=SAMPLES),
+        # expand(join(OUT_DIR, 'fastQC_trim', '{sample}.R1_fastqc.html'), sample=SAMPLES),
+        # expand(join(OUT_DIR, 'bam_dir', '{sample}_{parent}.qnsorted.bam'),
+        #        sample=SAMPLES, parent=PARENTS.keys()),
+        # expand(join(OUT_DIR, 'hmm_data', '{sample}',
+        #             'aln_{sample}_par1-filtered.bam'),
+        #        sample=SAMPLES),
+        # expand(join(OUT_DIR, 'hmm_data', '{sample}', '.pileups.done'),
+        #        sample=SAMPLES),
+        # expand(join(OUT_DIR, 'hmm_data', '{sample}', '.hmm.done'),
+        #        sample=SAMPLES),
+        # join(OUT_DIR, 'msg.chrLengths'),
+        # expand(join(OUT_DIR, 'hmm_fit', '{sample}', '{sample}-hmmprob.pdf'),
+        #        sample=SAMPLES),
+        # join(OUT_DIR, 'ancestry_data', 'ancestry-probs-par1.tsv'),
+        # join(OUT_DIR, 'ancestry_data', 'ancestry-probs-par2.tsv'),
+        # join(OUT_DIR, 'ancestry_data', 'ancestry-probs-par1par2.tsv'),
+        # join(OUT_DIR, 'ancestry_data', 'ancestry-probs-par2.thinned.tsv'),
+        join(OUT_DIR, 'ancestry_data', 'rqtl_genotypes.csv'),
+        *([join(OUT_DIR, 'ancestry_data', 'ancestry-probs-par1.thinned.tsv'),
+           join(OUT_DIR, 'ancestry_data', 'ancestry-probs-par1.thinned.f2_rqtl.tsv'),
+           join(OUT_DIR, 'ancestry_data', 'ancestry-probs-par2.thinned.f2_rqtl.tsv')]
+          if F2 else []),
+        # expand(join(OUT_DIR, 'bamqc', 'aligned',
+        #             '{sample}_{parent}', 'qualimapReport.html'),
+        #        sample=SAMPLES, parent=PARENTS.keys()),
+        # expand(join(OUT_DIR, 'bamqc', 'filtered',
+        #             '{sample}_par1', 'qualimapReport.html'),
+        #        sample=SAMPLES),
         join(OUT_DIR, 'MultiQC', 'multiqc_report.html'),
-        join(OUT_DIR, 'ancestry_data', 'ancestry-probs-par2.tsv.sorted.pulled.converted.thinned')
 
 ##--------------------------------------------------------------------------------------##
-##--------------------------------------------------------------------------------------##
-# ______        ___
-#| __ ) \      / / \
-#|  _ \\ \ /\ / / _ \
-#| |_) |\ V  V / ___ \
-#|____/  \_/\_/_/   \_\
-#
-##--------------------------------------------------------------------------------------##
+## Stage parental FASTAs into the output tree (symlink, no copy)
 ##--------------------------------------------------------------------------------------##
 
-## Rule for mapping PE reads to the genome with Bowtie2
+rule stage_parent:
+    input:
+        fasta = lambda wc: PARENTS[wc.parent]
+    output:
+        fasta = join(OUT_DIR, 'parents', '{parent}',
+                     '{parent}.fa')
+    message:
+        '--- Staging {wildcards.parent} FASTA into output tree'
+    shell:
+        'ln -sf {input.fasta} {output.fasta}'
+
+##--------------------------------------------------------------------------------------##
+## BWA indexes — one job per parental genome, run in parallel by the scheduler
+##--------------------------------------------------------------------------------------##
+
 rule INDEXES:
     input:
-        p1 = PARENT_1_DNA,
-        p2 = PARENT_2_DNA
+        fasta = join(OUT_DIR, 'parents', '{parent}', '{parent}.fa')
     output:
-        i1 = join(PARENT_1_DNA + '.ann'),
-        i2 = join(PARENT_2_DNA + '.ann'),
+        ann = join(OUT_DIR, 'parents', '{parent}', '{parent}.fa.ann'),
+        amb = join(OUT_DIR, 'parents', '{parent}', '{parent}.fa.amb'),
+        bwt = join(OUT_DIR, 'parents', '{parent}', '{parent}.fa.bwt'),
+        pac = join(OUT_DIR, 'parents', '{parent}', '{parent}.fa.pac'),
+        sa  = join(OUT_DIR, 'parents', '{parent}', '{parent}.fa.sa'),
     log:
-        bwa = join(OUT_DIR, 'Logs', 'bwa_index.log')
+        join(OUT_DIR, 'Logs', 'bwa_index.{parent}.log')
     benchmark:
-        join(OUT_DIR, 'Benchmarks', 'bwa_index.benchmark.tsv')
+        join(OUT_DIR, 'Benchmarks', 'bwa_index.{parent}.benchmark.tsv')
     message:
-        """--- Making BWA indexes for parental genomes."""
-    threads:
-        8
+        '--- Building BWA index for {wildcards.parent}'
+    threads: 1
     resources:
-        mem_mb=32000
+        mem_mb=8000
     conda:
-        'envs/msg.yml'
+        'envs/msg_py3.yml'
+    wildcard_constraints:
+        parent = '|'.join(PARENTS.keys())
     shell:
-        'bwa index {input.p1} && bwa index {input.p2} 2> {log.bwa}'
-
+        'bwa index {input.fasta} 2> {log}'
 
 ##--------------------------------------------------------------------------------------##
+## FastQC on raw reads
 ##--------------------------------------------------------------------------------------##
 
 rule fastqc1:
@@ -119,9 +134,9 @@ rule fastqc1:
     benchmark:
         join(OUT_DIR, 'Benchmarks', 'fastQC', '{sample}.fastQC.benchmark.tsv')
     message:
-        """--- Checking read quality of sample "{wildcards.sample}" with FastQC """
+        '--- Checking read quality of sample "{wildcards.sample}" with FastQC'
     conda:
-        'envs/DaGRP.yml'
+        'envs/msg_py3.yml'
     shell:
         'fastqc'
             ' -o ' + join(OUT_DIR, 'fastQC') +
@@ -131,7 +146,9 @@ rule fastqc1:
             ' > {log} 2>&1'
 
 ##--------------------------------------------------------------------------------------##
+## Adapter & quality trimming with cutadapt (PE)
 ##--------------------------------------------------------------------------------------##
+
 rule cutADAPT:
     input:
         r1 = lambda wildcards: FILES[wildcards.sample]['R1'],
@@ -139,26 +156,26 @@ rule cutADAPT:
     output:
         fastq1 = join(OUT_DIR, 'trimmed_reads', '{sample}.R1.fastq.gz'),
         fastq2 = join(OUT_DIR, 'trimmed_reads', '{sample}.R2.fastq.gz'),
-        qc = join(OUT_DIR, 'trimmed_reads', '{sample}.qc.txt')
+        qc     = join(OUT_DIR, 'trimmed_reads', '{sample}.qc.txt')
     params:
         # https://cutadapt.readthedocs.io/en/stable/guide.html#adapter-types
-        adapters="-a CTGTCTCTTATACACATCT -A CTGTCTCTTATACACATCT",
+        adapters = '-a CTGTCTCTTATACACATCT -A CTGTCTCTTATACACATCT',
         # https://cutadapt.readthedocs.io/en/stable/guide.html#
-        extra="--minimum-length 30 -q 20"
+        extra    = '--minimum-length 30 -q 20'
     log:
         join(OUT_DIR, 'Logs', 'cutadapt', '{sample}.cutadapt.log')
     benchmark:
         join(OUT_DIR, 'Benchmarks', 'cutadapt', '{sample}.cutadapt.benchmark.tsv')
     message:
-        """--- Trimming adaptors for sample {wildcards.sample}."""
-    threads:
-        4
+        '--- Trimming adaptors for sample {wildcards.sample}'
+    threads: 4
     resources:
         mem_mb=8000
     wrapper:
-        "v3.10.2/bio/cutadapt/pe"
+        'v3.10.2/bio/cutadapt/pe'
 
 ##--------------------------------------------------------------------------------------##
+## FastQC on trimmed reads
 ##--------------------------------------------------------------------------------------##
 
 rule fastqc2:
@@ -173,9 +190,9 @@ rule fastqc2:
     benchmark:
         join(OUT_DIR, 'Benchmarks', 'fastQC_trim', '{sample}.fastQC.benchmark.tsv')
     message:
-        """--- Checking read quality of trimmed sample "{wildcards.sample}" with FastQC """
+        '--- Checking read quality of trimmed sample "{wildcards.sample}" with FastQC'
     conda:
-        'envs/DaGRP.yml'
+        'envs/msg_py3.yml'
     shell:
         'fastqc'
             ' -o ' + join(OUT_DIR, 'fastQC_trim') +
@@ -185,500 +202,732 @@ rule fastqc2:
             ' > {log} 2>&1'
 
 ##--------------------------------------------------------------------------------------##
+## BWA-MEM paired-end mapping — one job per (sample, parent), run in parallel
 ##--------------------------------------------------------------------------------------##
 
-rule catReads:
+rule BWA_MEM:
     input:
-        r1 = join(OUT_DIR, 'trimmed_reads', '{sample}.R1.fastq.gz'),
-        r2 = join(OUT_DIR, 'trimmed_reads', '{sample}.R2.fastq.gz')
+        r1  = join(OUT_DIR, 'trimmed_reads', '{sample}.R1.fastq.gz'),
+        r2  = join(OUT_DIR, 'trimmed_reads', '{sample}.R2.fastq.gz'),
+        bwt = join(OUT_DIR, 'parents', '{parent}', '{parent}.fa.bwt'),
     output:
-        join(OUT_DIR, 'combined_reads', '{sample}.fastq.gz')
+        bam = join(OUT_DIR, 'bam_dir', '{sample}_{parent}.qnsorted.bam')
+    params:
+        prefix = lambda wc: join(OUT_DIR, 'parents', wc.parent, f'{wc.parent}.fa'),
+        rg     = lambda wc: rf'@RG\tID:{wc.sample}\tSM:{wc.sample}\tPL:ILLUMINA',
+        extra  = config.get('bwa_mem', {}).get('extra', ''),
+    log:
+        join(OUT_DIR, 'Logs', 'bwa_mem', '{sample}_{parent}.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'bwa_mem', '{sample}_{parent}.benchmark.tsv')
     message:
-        """--- Combining paired reads for {wildcards.sample}."""
-    threads:
-        4
+        '--- BWA-MEM: {wildcards.sample} -> {wildcards.parent} (qname-sorted BAM)'
+    threads: 8
     resources:
         mem_mb=16000
-    run:
-        shell('zcat {input.r1} {input.r2} | sed "'"/^@/ s/ /:/g"'" | gzip - > {output}')
-
-##--------------------------------------------------------------------------------------##
-##--------------------------------------------------------------------------------------##
-
-# rule count_reads:
-#     input:
-#          join(OUT_DIR, 'combined_reads', '{sample}.fastq.gz')
-#     output:
-#          join(OUT_DIR, 'read_counts', '{sample}.txt')
-#     shell:
-#         """
-#         zcat {input} | echo $((`wc -l`/4)) > {output}
-#         """
-        
-##--------------------------------------------------------------------------------------##
-##--------------------------------------------------------------------------------------##
-
-# rule filter_samples:
-#     input:
-#         join(OUT_DIR, 'read_counts', '{sample}.txt')
-#     output:
-#         join(OUT_DIR, 'filtered', '{sample}.flag')
-#     params:
-#         threshold = config['READ_THRESHOLD']
-#     shell:
-#         """
-#         if [ $(cat {input}) -ge {params.threshold} ]; then
-#             touch {output};
-#         else
-#             rm -f {output};
-#         fi
-#         """
-
-##--------------------------------------------------------------------------------------##
-##--------------------------------------------------------------------------------------##
-
-## Rule for mapping PE reads to the genome with Bowtie2
-rule BWAp1:
-    input:
-        reads = join(OUT_DIR, 'combined_reads', '{sample}.fastq.gz'),
-        # flag = join(OUT_DIR, 'filtered', '{sample}.flag'),
-        index = PARENT_1_DNA,
-        i1 = join(PARENT_1_DNA + '.ann')
-    output:
-        sai = join(OUT_DIR, 'sai_dir', 'aln_{sample}_par1.sai'),
-        sam = join(OUT_DIR, 'sam_dir', 'aln_{sample}_par1.sam')
-    log:
-        sai = join(OUT_DIR, 'Logs', '{sample}', 'bwa_sai.log'),
-        sam = join(OUT_DIR, 'Logs', '{sample}', 'bwa_sam.log')
-    benchmark:
-        join(OUT_DIR, 'Benchmarks', 'BWA_p1', '{sample}', 'benchmark.tsv')
-    message:
-        """--- Mapping sample "{wildcards.sample}" with BWA to parent1."""
-    threads:
-        8
-    resources:
-        mem_mb=32000
     conda:
-        'envs/msg.yml'
+        'envs/msg_py3.yml'
+    wildcard_constraints:
+        parent = '|'.join(PARENTS.keys())
     shell:
-        'bwa aln'
-                ' -t 8'
-                ' -f {output.sai}'
-                ' {input.index}'
-                ' {input.reads}'
-                ' > {log.sai} 2>&1 && '
-        'bwa samse'
-                # ' -t 8'
-                ' -f {output.sam}'
-                ' {input.index}'
-                ' {output.sai}'
-                ' {input.reads}'
-                ' > {log.sam} 2>&1'
-
+        '(bwa mem'
+            ' -t {threads}'
+            ' -R "{params.rg}"'
+            ' {params.extra}'
+            ' {params.prefix}'
+            ' {input.r1} {input.r2}'
+            ' | samtools sort -n -@ {threads} -o {output.bam} -)'
+            ' 2> {log}'
 
 ##--------------------------------------------------------------------------------------##
+## Extract reference alleles from PE alignments (Python3 rewrite)
 ##--------------------------------------------------------------------------------------##
 
-## Rule for mapping PE reads to the genome with Bowtie2
-rule BWAp2:
-    input:
-        reads = join(OUT_DIR, 'combined_reads', '{sample}.fastq.gz'),
-        # flag = join(OUT_DIR, 'filtered', '{sample}.flag'), 
-        index = PARENT_2_DNA,
-        i2 = join(PARENT_2_DNA + '.ann')
-    output:
-        sai = join(OUT_DIR, 'sai_dir', 'aln_{sample}_par2.sai'),
-        sam = join(OUT_DIR, 'sam_dir', 'aln_{sample}_par2.sam')
-    log:
-        sai = join(OUT_DIR, 'Logs', '{sample}', 'bwa_sai.log'),
-        sam = join(OUT_DIR, 'Logs', '{sample}', 'bwa_sam.log')
-    benchmark:
-        join(OUT_DIR, 'Benchmarks', 'BWA_p2', '{sample}', 'benchmark.tsv')
-    message:
-        """--- Mapping sample "{wildcards.sample}" with BWA to parent2."""
-    threads:
-        8
-    resources:
-        mem_mb=32000
-    conda:
-        'envs/msg.yml'
-    shell:
-        'bwa aln'
-                ' -t 8'
-                ' -f {output.sai}'
-                ' {input.index}'
-                ' {input.reads}'
-                ' > {log.sai} 2>&1 && '
-        'bwa samse'
-                # ' -t 8'
-                ' -f {output.sam}'
-                ' {input.index}'
-                ' {output.sai}'
-                ' {input.reads}'
-                ' > {log.sam} 2>&1'
-
-##--------------------------------------------------------------------------------------##
-##--------------------------------------------------------------------------------------##
-
-## Rule for mapping PE reads to the genome with Bowtie2
-# rule msg_symlink:
-#     output:
-#         msg = join(OUT_DIR, 'msg', 'msg', 'msg.pl')
-#     message:
-#         """--- Creating MSG directory symlink."""
-#     run:
-#         shell("""
-#             if [ -L {OUT_DIR}/msg ]; then
-#                 rm {OUT_DIR}/msg
-#             fi
-#             ln -s {BASE_MSG} {OUT_DIR}/msg
-#         """)
-
-##--------------------------------------------------------------------------------------##
-##--------------------------------------------------------------------------------------##
-
-## Rule for mapping PE reads to the genome with Bowtie2
 rule extractRefAllele:
     input:
-        sam_p1 = join(OUT_DIR, 'sam_dir', 'aln_{sample}_par1.sam'),
-        sam_p2 = join(OUT_DIR, 'sam_dir', 'aln_{sample}_par2.sam')
-        # msg = join(OUT_DIR, 'msg', 'msg', 'msg.pl')
+        bam_p1 = join(OUT_DIR, 'bam_dir', '{sample}_par1.qnsorted.bam'),
+        bam_p2 = join(OUT_DIR, 'bam_dir', '{sample}_par2.qnsorted.bam'),
+    output:
+        bam1 = join(OUT_DIR, 'hmm_data', '{sample}',
+                    'aln_{sample}_par1-filtered.bam'),
+        bam2 = join(OUT_DIR, 'hmm_data', '{sample}',
+                    'aln_{sample}_par2-filtered.bam'),
     params:
-        par1 = PARENT_1_DNA,
-        par2 = PARENT_2_DNA,
-        samtools = SAMTOOLS_PATH
-    output:
-        sam1 = join(OUT_DIR, 'hmm_data', '{sample}', 'aln_{sample}_par1-filtered.sam'),
-        sam2 = join(OUT_DIR, 'hmm_data', '{sample}', 'aln_{sample}_par2-filtered.sam')
+        par1     = lambda wc: PARENTS['par1'],
+        par2     = lambda wc: PARENTS['par2'],
+        outdir   = lambda wc: join(OUT_DIR, 'hmm_data', wc.sample),
+        chroms   = config.get('extract_ref', {}).get('chroms', 'all'),
+        repeat   = config.get('extract_ref', {}).get('repeat_threshold', 6),
+        script   = join(SCRIPTS_DIR, 'extract_ref_alleles.py'),
     log:
-        join(OUT_DIR, 'Logs', '{sample}', 'extract_ref_allele.log')
+        join(OUT_DIR, 'Logs', 'extract_ref_allele', '{sample}.log')
     benchmark:
-        join(OUT_DIR, 'Benchmarks', '{sample}', 'extract_ref_allele_benchmark.tsv')
+        join(OUT_DIR, 'Benchmarks', 'extract_ref_allele', '{sample}.benchmark.tsv')
     message:
-        """--- Extracting reference alleles for sample "{wildcards.sample}" ."""
-    threads:
-        8
+        '--- Extracting reference alleles for {wildcards.sample}'
+    threads: 1
     resources:
-        mem_mb=32000
-    run:
-        shell('bash ' + join(SCRIPTS_DIR, 'run_extract_ref_allele.sh') +
-                ' -s ' + join(OUT_DIR, 'sam_dir') +
-                ' -o ' + join(OUT_DIR, 'hmm_data') +
-                ' -p {params.par1}'
-                ' -q {params.par2}'
-                ' -i {wildcards.sample}'
-                ' -c all'
-                ' -w aln'
-                ' -k 6'
-                ' -S {params.samtools}'
-                ' -m ' + join(BASE_MSG) +
-                ' > {log} 2>&1')
-
-
-##--------------------------------------------------------------------------------------##
-##--------------------------------------------------------------------------------------##
-
-## Rule for mapping PE reads to the genome with Bowtie2
-rule makePileups:
-    input:
-        sam1 = join(OUT_DIR, 'hmm_data', '{sample}', 'aln_{sample}_par1-filtered.sam'),
-        sam2 = join(OUT_DIR, 'hmm_data', '{sample}', 'aln_{sample}_par2-filtered.sam')
-    params:
-        par1 = PARENT_1_DNA,
-        par2 = PARENT_2_DNA,
-        samtools = SAMTOOLS_PATH
-    output:
-        sam1 = join(OUT_DIR, 'hmm_data', '{sample}', 'aln_{sample}_par1-filtered-sorted.bam')
-    log:
-        join(OUT_DIR, 'Logs', '{sample}', 'make_pileups.log')
-    benchmark:
-        join(OUT_DIR, 'Benchmarks', '{sample}', 'make_pileups_benchmark.tsv')
-    message:
-        """--- Making pileups for sample "{wildcards.sample}" ."""
-    threads:
-        8
-    resources:
-        mem_mb=32000
-    # conda:
-    #     'envs/samtool_0.1.9.yml'
-    shell:
-        'bash ' + join(SCRIPTS_DIR, 'run_make_pileups.sh') +
-                ' -o ' + join(OUT_DIR, 'hmm_data') +
-                ' -p {params.par1}'
-                ' -q {params.par2}'
-                ' -i {wildcards.sample}'
-                ' -S {params.samtools}'
-                ' -m ' + join(BASE_MSG) +
-                ' > {log} 2>&1'
-
-##--------------------------------------------------------------------------------------##
-##--------------------------------------------------------------------------------------##
-
-## Rule for mapping PE reads to the genome with Bowtie2
-rule qualiMap:
-    input:
-        bam = join(OUT_DIR, 'hmm_data', '{sample}', 'aln_{sample}_par1-filtered-sorted.bam')
-    output:
-        bamqc = join(OUT_DIR, 'bamqc', '{sample}', 'qualimapReport.html')
-    log:
-        join(OUT_DIR, 'Logs', '{sample}', 'bamqc.log')
-    benchmark:
-        join(OUT_DIR, 'Benchmarks', '{sample}', 'bamqc_benchmark.tsv')
-    message:
-        """--- running BAM QC for "{wildcards.sample}" ."""
-    threads:
-        8
-    resources:
-        mem_mb=32000
+        mem_mb=16000
     conda:
-        'envs/DaGRP.yml'
+        'envs/msg_py3.yml'
     shell:
-        'qualimap bamqc'
-            ' -bam {input.bam}'
-            ' -c'
-            ' -outdir ' + join(OUT_DIR, 'bamqc', '{wildcards.sample}') +
-            ' --java-mem-size=32G'
-            ' -nt 8'
+        'python {params.script}'
+            ' -i {wildcards.sample}'
+            ' --bam-par1 {input.bam_p1}'
+            ' --bam-par2 {input.bam_p2}'
+            ' --parent1 {params.par1}'
+            ' --parent2 {params.par2}'
+            ' -o {params.outdir}'
+            ' --chroms {params.chroms}'
+            ' --repeat-threshold {params.repeat}'
             ' > {log} 2>&1'
 
 ##--------------------------------------------------------------------------------------##
+## Per-contig pileups (par1 only — par2 alleles come from extract step's lookup tables)
 ##--------------------------------------------------------------------------------------##
 
-## Rule for mapping PE reads to the genome with Bowtie2
+rule makePileups:
+    input:
+        bam     = join(OUT_DIR, 'hmm_data', '{sample}', 'aln_{sample}_par1-filtered.bam'),
+        par1_fa = join(OUT_DIR, 'parents', 'par1', 'par1.fa'),
+    output:
+        sorted_bam = join(OUT_DIR, 'hmm_data', '{sample}',
+                          'aln_{sample}_par1-filtered-sorted.bam'),
+        sorted_bai = join(OUT_DIR, 'hmm_data', '{sample}',
+                          'aln_{sample}_par1-filtered-sorted.bam.bai'),
+        done       = touch(join(OUT_DIR, 'hmm_data', '{sample}', '.pileups.done')),
+    params:
+        sample_dir = lambda wc: join(OUT_DIR, 'hmm_data', wc.sample),
+        prefix     = lambda wc: join(OUT_DIR, 'hmm_data', wc.sample,
+                                     f'aln_{wc.sample}_par1-filtered'),
+    log:
+        join(OUT_DIR, 'Logs', 'makePileups', '{sample}.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'makePileups', '{sample}.benchmark.tsv')
+    message:
+        '--- Per-contig pileups for {wildcards.sample} (par1)'
+    threads: 4
+    resources:
+        mem_mb=8000
+    conda:
+        'envs/msg_py3.yml'
+    shell:
+        r"""
+        (
+            set -e
+            samtools sort -@ {threads} -o {output.sorted_bam} {input.bam}
+            samtools index {output.sorted_bam}
+            samtools faidx {input.par1_fa}
+
+            shopt -s nullglob
+            for refs_file in {params.sample_dir}/refs/par1/*-ref.alleles; do
+                contig=$(basename "$refs_file" -ref.alleles)
+                samtools mpileup -B -f {input.par1_fa} -r "$contig" {output.sorted_bam} \
+                    > {params.prefix}-"${{contig}}"-sorted.pileup
+            done
+        ) > {log} 2>&1
+        """
+
+##--------------------------------------------------------------------------------------##
+## Build per-contig HMM input data (modern R script — no msg/countalleles binary)
+##--------------------------------------------------------------------------------------##
+
 rule writeHMM:
     input:
-        sam1 = join(OUT_DIR, 'hmm_data', '{sample}', 'aln_{sample}_par1-filtered-sorted.bam'),
-        reference = PARENT_1_DNA
+        pileups_done = join(OUT_DIR, 'hmm_data', '{sample}', '.pileups.done'),
     output:
-        done = join(OUT_DIR, 'hmm_data', '{sample}', 'hmm.ok')
+        done = touch(join(OUT_DIR, 'hmm_data', '{sample}', '.hmm.done')),
+    params:
+        sample_dir = lambda wc: join(OUT_DIR, 'hmm_data', wc.sample),
+        chroms     = config.get('write_hmm', {}).get('chroms', 'all'),
+        script     = join(SCRIPTS_DIR, 'write_hmm_data.R'),
     log:
-        join(OUT_DIR, 'Logs', '{sample}', 'write_hmm_data.log')
+        join(OUT_DIR, 'Logs', 'writeHMM', '{sample}.log')
     benchmark:
-        join(OUT_DIR, 'Benchmarks', '{sample}', 'write_hmm_data_benchmark.tsv')
+        join(OUT_DIR, 'Benchmarks', 'writeHMM', '{sample}.benchmark.tsv')
     message:
-        """--- Writing HMM data for sample "{wildcards.sample}" ."""
-    threads:
-        8
+        '--- Building HMM input data for {wildcards.sample}'
+    threads: 1
     resources:
-        mem_mb=32000
-    run:
-        shell('bash ' + join(SCRIPTS_DIR, 'run_write_hmm_data.sh') +
-                ' -o ' + join(OUT_DIR, 'hmm_data') +
-                ' -i {wildcards.sample}'
-                ' -m ' + join(BASE_MSG) +
-                ' -c all'
-                ' > {log} 2>&1')
-        # Check that all expected output files are present
-        chrom_files = []
-        with open(input.reference, 'r') as ref:
-            for line in ref:
-                if line.startswith('>'):
-                    chrom = line[1:].strip().split()[0]
-                    chrom_file = join(OUT_DIR, 'hmm_data', f'{wildcards.sample}', f'{wildcards.sample}-{chrom}.hmmdata').replace(" ", "")
-                    chrom_files.append(chrom_file)
-
-        missing_files = [f for f in chrom_files if not os.path.exists(f)]
-        if missing_files:
-            raise Exception(f"Missing expected HMM data files: {missing_files}")
-
-        # Create the touched file if all expected files are present
-        shell('touch {output.done}')
-        shell('touch {output.done}')
+        mem_mb=8000
+    conda:
+        'envs/r_msg_v2.yml'
+    shell:
+        'Rscript {params.script}'
+            ' -i {wildcards.sample}'
+            ' -d {params.sample_dir}'
+            ' -c {params.chroms}'
+            ' > {log} 2>&1'
 
 ##--------------------------------------------------------------------------------------##
+## Coord-sort BWA_MEM BAMs (qname-sorted upstream) — needed for QC + indexing
 ##--------------------------------------------------------------------------------------##
 
-## Rule for mapping PE reads to the genome with Bowtie2
+rule sort_aligned_bam:
+    input:
+        bam = join(OUT_DIR, 'bam_dir', '{sample}_{parent}.qnsorted.bam'),
+    output:
+        bam = join(OUT_DIR, 'bam_dir', '{sample}_{parent}.sorted.bam'),
+        bai = join(OUT_DIR, 'bam_dir', '{sample}_{parent}.sorted.bam.bai'),
+    threads: 4
+    resources:
+        mem_mb=8000
+    conda:
+        'envs/msg_py3.yml'
+    wildcard_constraints:
+        parent = '|'.join(PARENTS.keys())
+    shell:
+        'samtools sort -@ {threads} -o {output.bam} {input.bam}'
+        ' && samtools index {output.bam}'
+
+##--------------------------------------------------------------------------------------##
+## Qualimap on raw aligned BAMs (sample × parent)
+##--------------------------------------------------------------------------------------##
+
+rule qualimap_aligned:
+    input:
+        bam = join(OUT_DIR, 'bam_dir', '{sample}_{parent}.sorted.bam'),
+    output:
+        report = join(OUT_DIR, 'bamqc', 'aligned',
+                      '{sample}_{parent}', 'qualimapReport.html'),
+    params:
+        outdir = lambda wc: join(OUT_DIR, 'bamqc', 'aligned',
+                                 f'{wc.sample}_{wc.parent}'),
+    log:
+        join(OUT_DIR, 'Logs', 'qualimap_aligned', '{sample}_{parent}.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'qualimap_aligned',
+             '{sample}_{parent}.benchmark.tsv')
+    message:
+        '--- Qualimap on aligned BAM: {wildcards.sample} → {wildcards.parent}'
+    threads: 4
+    resources:
+        mem_mb=8000
+    conda:
+        'envs/msg_py3.yml'
+    wildcard_constraints:
+        parent = '|'.join(PARENTS.keys())
+    shell:
+        'unset DISPLAY; qualimap bamqc'
+            ' -bam {input.bam}'
+            ' -c'
+            ' -outdir {params.outdir}'
+            ' --java-mem-size=8G'
+            ' -nt {threads}'
+            ' > {log} 2>&1'
+
+##--------------------------------------------------------------------------------------##
+## Qualimap on filtered + coord-sorted par1 BAMs (from makePileups)
+##--------------------------------------------------------------------------------------##
+
+rule qualimap_filtered:
+    input:
+        bam = join(OUT_DIR, 'hmm_data', '{sample}',
+                   'aln_{sample}_par1-filtered-sorted.bam'),
+    output:
+        report = join(OUT_DIR, 'bamqc', 'filtered',
+                      '{sample}_par1', 'qualimapReport.html'),
+    params:
+        outdir = lambda wc: join(OUT_DIR, 'bamqc', 'filtered',
+                                 f'{wc.sample}_par1'),
+    log:
+        join(OUT_DIR, 'Logs', 'qualimap_filtered', '{sample}.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'qualimap_filtered',
+             '{sample}.benchmark.tsv')
+    message:
+        '--- Qualimap on filtered BAM: {wildcards.sample} (par1)'
+    threads: 4
+    resources:
+        mem_mb=8000
+    conda:
+        'envs/msg_py3.yml'
+    shell:
+        'unset DISPLAY; qualimap bamqc'
+            ' -bam {input.bam}'
+            ' -c'
+            ' -outdir {params.outdir}'
+            ' --java-mem-size=8G'
+            ' -nt {threads}'
+            ' > {log} 2>&1'
+
+##--------------------------------------------------------------------------------------##
+## Per-contig lengths CSV from par1 FASTA (single job, used by fit + downstream)
+##--------------------------------------------------------------------------------------##
+
 rule chromLengths:
     input:
-        par1 = PARENT_1_DNA
+        par1 = PARENTS['par1'],
     output:
-        chr_len = join(OUT_DIR, 'msg.chrLengths')
+        chr_len = join(OUT_DIR, 'msg.chrLengths'),
     log:
-        join(OUT_DIR, 'Logs', 'chrLengths.log')
+        join(OUT_DIR, 'Logs', 'chromLengths.log')
     benchmark:
-        join(OUT_DIR, 'Benchmarks', 'chrLengths_benchmark.tsv')
+        join(OUT_DIR, 'Benchmarks', 'chromLengths.benchmark.tsv')
     message:
-        """--- Outputting chromosome lengths ."""
-    threads:
-        2
+        '--- Building per-contig lengths CSV from par1'
+    threads: 1
     resources:
         mem_mb=1000
     conda:
-        'envs/DaGRP.yml'
+        'envs/msg_py3.yml'
     shell:
-        'faidx {input.par1} -i chromsizes | tr "\t" "," > {output.chr_len}.tmp &&'
-        ' echo "chr,length" | cat - {output.chr_len}.tmp > {output.chr_len} &&'
-        ' rm {output.chr_len}.tmp'
-
+        r"""
+        (
+            set -e
+            faidx {input.par1} -i chromsizes \
+                | tr "\t" "," > {output.chr_len}.tmp
+            echo "chr,length" | cat - {output.chr_len}.tmp > {output.chr_len}
+            rm {output.chr_len}.tmp
+        ) > {log} 2>&1
+        """
 
 ##--------------------------------------------------------------------------------------##
+## Fit per-contig HMMs and emit ancestry plots (modern R script — no msg/ dependency)
 ##--------------------------------------------------------------------------------------##
 
-## Rule for mapping PE reads to the genome with Bowtie2
-rule fit:  
+rule fit:
     input:
-        join(OUT_DIR, 'hmm_data', '{sample}', 'hmm.ok'),
-        chr_len = join(OUT_DIR, 'msg.chrLengths')
+        hmm_done = join(OUT_DIR, 'hmm_data', '{sample}', '.hmm.done'),
+        chr_len  = join(OUT_DIR, 'msg.chrLengths'),
     output:
-        pdf = join(OUT_DIR, 'hmm_fit', '{sample}', '{sample}-hmmprob.pdf')
+        pdf = join(OUT_DIR, 'hmm_fit', '{sample}', '{sample}-hmmprob.pdf'),
     params:
-        sex = config['fit_hmm']['sex'],
-        deltapar1 = config['fit_hmm']['deltapar1'],
-        deltapar2 = config['fit_hmm']['deltapar2'],
-        recRate = config['fit_hmm']['recRate'],
-        rfac = config['fit_hmm']['rfac'],
-        chroms = config['fit_hmm']['chroms'],
-        sexchrom = config['fit_hmm']['sexchrom'],
-        prior = config['fit_hmm']['prior'],
-        theta = config['fit_hmm']['theta'],
-        gff_thresh_conf = config['fit_hmm']['gff_thresh_conf'],
+        script              = join(SCRIPTS_DIR, 'fit_hmm.R'),
+        hmm_data_dir        = join(OUT_DIR, 'hmm_data'),
+        outdir              = join(OUT_DIR, 'hmm_fit'),
+        sex                 = config['fit_hmm']['sex'],
+        deltapar1           = config['fit_hmm']['deltapar1'],
+        deltapar2           = config['fit_hmm']['deltapar2'],
+        rec_rate            = config['fit_hmm']['recRate'],
+        rfac                = config['fit_hmm']['rfac'],
+        chroms              = config['fit_hmm']['chroms'],
+        sex_chroms          = config['fit_hmm']['sexchrom'],
+        priors              = config['fit_hmm']['prior'],
+        theta               = config['fit_hmm']['theta'],
+        gff_thresh_conf     = config['fit_hmm']['gff_thresh_conf'],
         one_site_per_contig = config['fit_hmm']['one_site_per_contig'],
-        chroms2plot = config['fit_hmm']['chroms2plot'],
-        pepthresh = config['fit_hmm']['pepthresh'],
-        use_filter_hmmdata_pl = config['fit_hmm']['use_filter_hmmdata_pl']
+        chroms2plot         = config['fit_hmm']['chroms2plot'],
+        pepthresh           = config['fit_hmm']['pepthresh'],
+        use_filter_hmmdata  = config['fit_hmm']['use_filter_hmmdata_pl'],
     log:
-        join(OUT_DIR, 'Logs', '{sample}', 'fit_hmm.log')
+        join(OUT_DIR, 'Logs', 'fit', '{sample}.log')
     benchmark:
-        join(OUT_DIR, 'Benchmarks', '{sample}', 'fit_hmm_benchmark.tsv')
+        join(OUT_DIR, 'Benchmarks', 'fit', '{sample}.benchmark.tsv')
     message:
-        """--- Fitting HMM for sample "{wildcards.sample}" ."""
-    threads:
-        8
+        '--- Fitting HMM for sample {wildcards.sample}'
+    threads: 8
     resources:
         mem_mb=32000
-    run:
-        shell('bash ' + join(SCRIPTS_DIR, 'run_fit_hmm.sh') +
-                ' -o ' + join(OUT_DIR, 'hmm_data') +
-                ' -R ' + join(OUT_DIR, 'hmm_fit') +
-                ' -s {params.sex}' 
-                ' -p {params.deltapar1}' 
-                ' -q {params.deltapar2}' 
-                ' -a {params.recRate}' 
-                ' -r {params.rfac}' 
-                ' -i {wildcards.sample}'
-                ' -c {params.chroms}' 
-                ' -x {params.sexchrom}' 
-                ' -z {params.prior}' 
-                ' -t {params.theta}' 
-                ' -m {params.gff_thresh_conf}' 
-                ' -u {params.one_site_per_contig}' 
-                ' -y {params.chroms2plot}' 
-                ' -j {params.pepthresh}' 
-                ' -n ' + join(BASE_MSG) +
-                ' -v {params.use_filter_hmmdata_pl}' 
-                ' -l {input.chr_len}'
-                ' > {log} 2>&1')
+    conda:
+        'envs/r_msg_v2.yml'
+    shell:
+        'Rscript {params.script}'
+            ' --indiv {wildcards.sample}'
+            ' --hmm-data-dir {params.hmm_data_dir}'
+            ' --outdir {params.outdir}'
+            ' --chr-lengths {input.chr_len}'
+            ' --sex {params.sex}'
+            ' --deltapar1 {params.deltapar1}'
+            ' --deltapar2 {params.deltapar2}'
+            ' --rec-rate {params.rec_rate}'
+            ' --rfac {params.rfac}'
+            ' --chroms {params.chroms}'
+            ' --sex-chroms {params.sex_chroms}'
+            ' --priors {params.priors}'
+            ' --theta {params.theta}'
+            ' --gff-thresh-conf {params.gff_thresh_conf}'
+            ' --one-site-per-contig {params.one_site_per_contig}'
+            ' --chroms2plot {params.chroms2plot}'
+            ' --pepthresh {params.pepthresh}'
+            ' --use-filter-hmmdata {params.use_filter_hmmdata}'
+            ' > {log} 2>&1'
 
 ##--------------------------------------------------------------------------------------##
+## Aggregate per-sample fits into genome-wide ancestry tables + summary plots
 ##--------------------------------------------------------------------------------------##
 
-## Rule for mapping PE reads to the genome with Bowtie2
 rule ancestry_probs:
     input:
-        expand(join(OUT_DIR, 'hmm_fit', '{sample}', '{sample}-hmmprob.pdf'), sample = SAMPLES),
-        chr_len = join(OUT_DIR, 'msg.chrLengths')
+        pdfs    = expand(join(OUT_DIR, 'hmm_fit', '{sample}',
+                              '{sample}-hmmprob.pdf'), sample=SAMPLES),
+        chr_len = join(OUT_DIR, 'msg.chrLengths'),
     output:
-        anc1 = join(OUT_DIR, 'ancestry_data', 'ancestry-probs-par1.tsv'),
-        anc2 = join(OUT_DIR, 'ancestry_data', 'ancestry-probs-par2.tsv')
-    log:
-        join(OUT_DIR, 'Logs', 'summary_plots.log')
-    benchmark:
-        join(OUT_DIR, 'Benchmarks', 'summary_plots_benchmark.tsv')
-    message:
-        """--- Outputting summary plots and ancestry probablities ."""
-    threads:
-        8
-    resources:
-        mem_mb=32000
-    run:
-        shell('bash ' + join(SCRIPTS_DIR, 'run_summary_plots.sh') +
-                ' -c all'
-                ' -d ' + join(OUT_DIR, 'hmm_fit') +
-                ' -m ' + join(BASE_MSG) +
-                ' -f 0.01'
-                ' -p all'
-                ' -n 0.03'
-                ' -l {input.chr_len}'
-                ' -t 1'
-                ' > {log} 2>&1')
-        shell('mv ancestry-probs-* ' + join(OUT_DIR, 'ancestry_data'))
-        shell('mv offdiagonal_data.tsv rhat-offdiag.rda rlod-offdiag.rda ' + join(OUT_DIR, 'hmm_fit_images'))
-
-##--------------------------------------------------------------------------------------##
-##--------------------------------------------------------------------------------------##
-
-## Rule for mapping PE reads to the genome with Bowtie2
-rule pull_thin:
-    input:
-        anc1 = join(OUT_DIR, 'ancestry_data', 'ancestry-probs-par1.tsv'),
-        anc2 = join(OUT_DIR, 'ancestry_data', 'ancestry-probs-par2.tsv')
+        anc1    = join(OUT_DIR, 'ancestry_data', 'ancestry-probs-par1.tsv'),
+        anc2    = join(OUT_DIR, 'ancestry_data', 'ancestry-probs-par2.tsv'),
+        anc12   = join(OUT_DIR, 'ancestry_data', 'ancestry-probs-par1par2.tsv'),
+        offdiag = join(OUT_DIR, 'hmm_fit_images', 'offdiagonal_data.tsv'),
+        rhat    = join(OUT_DIR, 'hmm_fit_images', 'rhat-offdiag.rda'),
+        rlod    = join(OUT_DIR, 'hmm_fit_images', 'rlod-offdiag.rda'),
+        seg_pdf = join(OUT_DIR, 'hmm_fit_images', 'segregation.pdf'),
+        miss_pdf = join(OUT_DIR, 'hmm_fit_images', 'missing.pdf'),
+        lod_pdf  = join(OUT_DIR, 'hmm_fit_images', 'offdiagonal-lod.pdf'),
     params:
-        pheno = PHENO_FILE,
-        sexchrom = config['fit_hmm']['sexchrom'],
-        chroms = config['fit_hmm']['chroms'],
-        diffac = config['fit_hmm']['diffac'],
-        cross = config['fit_hmm']['cross'],
-        sex = config['fit_hmm']['sex']
-    output:
-        ancestry2 = join(OUT_DIR, 'ancestry_data', 'ancestry-probs-par2.tsv.sorted.pulled.converted.thinned')
+        script        = join(SCRIPTS_DIR, 'ancestry_probs.R'),
+        hmm_fit_dir   = join(OUT_DIR, 'hmm_fit'),
+        ancestry_dir  = join(OUT_DIR, 'ancestry_data'),
+        images_dir    = join(OUT_DIR, 'hmm_fit_images'),
+        chroms        = config['fit_hmm']['chroms'],
+        chroms2plot   = config['fit_hmm']['chroms2plot'],
+        thinfac       = config['fit_hmm']['thinfac'],
+        diffac        = config['fit_hmm']['diffac'],
+        pna_thresh    = config['fit_hmm']['pna_thresh'],
+        plot_corr_mat = config['fit_hmm']['plot_correlation_matrix'],
+        bp_widths     = config['fit_hmm']['breakpoint_widths'],
     log:
-        join(OUT_DIR, 'Logs', 'pull_thin.log')
+        join(OUT_DIR, 'Logs', 'ancestry_probs.log')
     benchmark:
-        join(OUT_DIR, 'Benchmarks', 'pull_thin_benchmark.tsv')
+        join(OUT_DIR, 'Benchmarks', 'ancestry_probs.benchmark.tsv')
     message:
-        """--- Pull thin ."""
-    threads:
-        16
+        '--- Aggregating ancestry probabilities + summary plots'
+    threads: 1
     resources:
         mem_mb=32000
-    run:
-        shell('bash ' + join(SCRIPTS_DIR, 'run_pull_thin.sh') +
-                ' -c {params.chroms}'
-                ' -x {params.sexchrom}'
-                ' -p {input.anc1}'
-                ' -q {input.anc2}'
-                ' -f {params.diffac}'
-                ' -k {params.cross}'
-                ' -n {params.pheno}'
-                ' -s {params.sex}'
-                ' -t ' + join(OUT_DIR, 'ancestry_data', 'pt.cfg') +
-                ' -m ' + join(BASE_MSG) +
-                ' > {log} 2>&1')
-        shell('mv {params.pheno}.sorted* ' + join(OUT_DIR, 'ancestry_data'))
+    conda:
+        'envs/r_msg_v2.yml'
+    shell:
+        'Rscript {params.script}'
+            ' --hmm-fit-dir {params.hmm_fit_dir}'
+            ' --ancestry-dir {params.ancestry_dir}'
+            ' --images-dir {params.images_dir}'
+            ' --chr-lengths {input.chr_len}'
+            ' --chroms {params.chroms}'
+            ' --chroms2plot {params.chroms2plot}'
+            ' --thinfac {params.thinfac}'
+            ' --diffac {params.diffac}'
+            ' --pna-thresh {params.pna_thresh}'
+            ' --plot-correlation-matrix {params.plot_corr_mat}'
+            ' --breakpoint-widths {params.bp_widths}'
+            ' > {log} 2>&1'
 
 ##--------------------------------------------------------------------------------------##
-##--------------------------------------------------------------------------------------##
-# __  __       _ _   _  ___   ____
-#|  \/  |_   _| | |_(_)/ _ \ / ___|
-#| |\/| | | | | | __| | | | | |
-#| |  | | |_| | | |_| | |_| | |___
-#|_|  |_|\__,_|_|\__|_|\__\_\\____|
-#
-##--------------------------------------------------------------------------------------##
+## pull_thin: factored into 5 small rules (sort -> pull -> thin -> [f2_reduce] -> rqtl)
 ##--------------------------------------------------------------------------------------##
 
-## Rule to collate fastQC and Bowtie2 outputs with multiQC
+rule pt_sort_phenofile:
+    input:
+        pheno = PHENO_FILE,
+    output:
+        sorted = join(OUT_DIR, 'ancestry_data', 'pheno.sorted.tsv'),
+    log:
+        join(OUT_DIR, 'Logs', 'pt_sort_phenofile.log')
+    message:
+        '--- Sorting phenofile by individual ID'
+    threads: 1
+    resources:
+        mem_mb=1000
+    conda:
+        'envs/msg_py3.yml'
+    shell:
+        'python {SCRIPTS_DIR}/sort_indivs.py'
+            ' --input {input.pheno}'
+            ' --output {output.sorted}'
+            ' > {log} 2>&1'
+
+rule pt_sort_par:
+    input:
+        tsv = join(OUT_DIR, 'ancestry_data', 'ancestry-probs-{parent}.tsv'),
+    output:
+        sorted = join(OUT_DIR, 'ancestry_data',
+                      'ancestry-probs-{parent}.sorted.tsv'),
+    log:
+        join(OUT_DIR, 'Logs', 'pt_sort_par.{parent}.log')
+    message:
+        '--- Sorting ancestry-probs-{wildcards.parent}.tsv by individual ID'
+    threads: 1
+    resources:
+        mem_mb=4000
+    conda:
+        'envs/msg_py3.yml'
+    wildcard_constraints:
+        parent = 'par[12]'
+    shell:
+        'python {SCRIPTS_DIR}/sort_indivs.py'
+            ' --input {input.tsv}'
+            ' --output {output.sorted}'
+            ' > {log} 2>&1'
+
+rule pt_pull_phenofile:
+    input:
+        sorted = join(OUT_DIR, 'ancestry_data', 'pheno.sorted.tsv'),
+    output:
+        pulled = join(OUT_DIR, 'ancestry_data', 'pheno.pulled.tsv'),
+    params:
+        indivs = config['fit_hmm']['indivs'],
+    log:
+        join(OUT_DIR, 'Logs', 'pt_pull_phenofile.log')
+    message:
+        '--- Pulling individuals from phenofile (indivs={params.indivs})'
+    threads: 1
+    resources:
+        mem_mb=1000
+    conda:
+        'envs/msg_py3.yml'
+    shell:
+        'python {SCRIPTS_DIR}/pull_indivs.py'
+            ' --input {input.sorted}'
+            ' --output {output.pulled}'
+            ' --indivs "{params.indivs}"'
+            ' > {log} 2>&1'
+
+rule pt_pull_par:
+    input:
+        sorted = join(OUT_DIR, 'ancestry_data',
+                      'ancestry-probs-{parent}.sorted.tsv'),
+    output:
+        pulled = join(OUT_DIR, 'ancestry_data',
+                      'ancestry-probs-{parent}.pulled.tsv'),
+    params:
+        indivs = config['fit_hmm']['indivs'],
+    log:
+        join(OUT_DIR, 'Logs', 'pt_pull_par.{parent}.log')
+    message:
+        '--- Pulling individuals from ancestry-probs-{wildcards.parent} (indivs={params.indivs})'
+    threads: 1
+    resources:
+        mem_mb=4000
+    conda:
+        'envs/msg_py3.yml'
+    wildcard_constraints:
+        parent = 'par[12]'
+    shell:
+        'python {SCRIPTS_DIR}/pull_indivs.py'
+            ' --input {input.sorted}'
+            ' --output {output.pulled}'
+            ' --indivs "{params.indivs}"'
+            ' > {log} 2>&1'
+
+def _thin_inputs(wc):
+    base = join(OUT_DIR, 'ancestry_data')
+    inputs = {
+        'par2':  join(base, 'ancestry-probs-par2.pulled.tsv'),
+        'pheno': join(base, 'pheno.pulled.tsv'),
+    }
+    if F2:
+        inputs['par1'] = join(base, 'ancestry-probs-par1.pulled.tsv')
+    return inputs
+
+def _thin_outputs():
+    base = join(OUT_DIR, 'ancestry_data')
+    outs = {'par2_thin': join(base, 'ancestry-probs-par2.thinned.tsv')}
+    if F2:
+        outs['par1_thin'] = join(base, 'ancestry-probs-par1.thinned.tsv')
+    return outs
+
+rule pt_thin:
+    input:
+        unpack(_thin_inputs),
+    output:
+        **_thin_outputs(),
+    params:
+        chroms          = config['fit_hmm']['chroms'],
+        xchroms         = config['fit_hmm']['sexchrom'],
+        diffac          = config['fit_hmm']['diffac'],
+        num_markers     = config['fit_hmm']['num_markers'],
+        ignore_nan      = config['fit_hmm']['ignore_nan'],
+        autosome_prior  = config['fit_hmm']['autosome_prior'],
+        x_prior         = config['fit_hmm']['x_prior'],
+        sex_all         = config['fit_hmm']['sex'],
+        f2_args         = (lambda wc:
+            f' --par1 {join(OUT_DIR, "ancestry_data", "ancestry-probs-par1.pulled.tsv")}'
+            f' --par1-out {join(OUT_DIR, "ancestry_data", "ancestry-probs-par1.thinned.tsv")}'
+            if F2 else ''),
+        nm_arg          = (lambda wc:
+            f' --num-markers {config["fit_hmm"]["num_markers"]}'
+            if config['fit_hmm']['num_markers'] not in (None, "null") else ''),
+    log:
+        join(OUT_DIR, 'Logs', 'pt_thin.log')
+    message:
+        '--- Thinning markers (cross={CROSS})'
+    threads: 1
+    resources:
+        mem_mb=64000
+    conda:
+        'envs/msg_py3.yml'
+    shell:
+        'python {SCRIPTS_DIR}/thin_markers.py'
+            ' --par2 {input.par2}'
+            ' --par2-out {output.par2_thin}'
+            ' --chroms {params.chroms}'
+            ' --xchroms {params.xchroms}'
+            ' --diffac {params.diffac}'
+            ' --ignore-nan {params.ignore_nan}'
+            ' --autosome-prior {params.autosome_prior}'
+            ' --x-prior {params.x_prior}'
+            ' --sex-all {params.sex_all}'
+            ' --phenofile {input.pheno}'
+            '{params.nm_arg}'
+            '{params.f2_args}'
+            ' > {log} 2>&1'
+
+rule pt_f2_reduce:
+    input:
+        par1 = join(OUT_DIR, 'ancestry_data', 'ancestry-probs-par1.thinned.tsv'),
+        par2 = join(OUT_DIR, 'ancestry_data', 'ancestry-probs-par2.thinned.tsv'),
+        pheno = join(OUT_DIR, 'ancestry_data', 'pheno.pulled.tsv'),
+    output:
+        par1_out = join(OUT_DIR, 'ancestry_data',
+                        'ancestry-probs-par1.thinned.f2_rqtl.tsv'),
+        par2_out = join(OUT_DIR, 'ancestry_data',
+                        'ancestry-probs-par2.thinned.f2_rqtl.tsv'),
+    params:
+        xchroms = config['fit_hmm']['sexchrom'],
+        sex_all = config['fit_hmm']['sex'],
+    log:
+        join(OUT_DIR, 'Logs', 'pt_f2_reduce.log')
+    message:
+        '--- F2 X-chrom prob slot conversion (side artifact)'
+    threads: 1
+    resources:
+        mem_mb=8000
+    conda:
+        'envs/msg_py3.yml'
+    shell:
+        'python {SCRIPTS_DIR}/f2_reduce_prob_slots.py'
+            ' --par1 {input.par1}'
+            ' --par2 {input.par2}'
+            ' --par1-out {output.par1_out}'
+            ' --par2-out {output.par2_out}'
+            ' --xchroms {params.xchroms}'
+            ' --sex-all {params.sex_all}'
+            ' --phenofile {input.pheno}'
+            ' > {log} 2>&1'
+
+def _rqtl_inputs(wc):
+    base = join(OUT_DIR, 'ancestry_data')
+    inputs = {
+        'par2':  join(base, 'ancestry-probs-par2.thinned.tsv'),
+        'pheno': join(base, 'pheno.pulled.tsv'),
+    }
+    if F2:
+        inputs['par1'] = join(base, 'ancestry-probs-par1.thinned.tsv')
+    return inputs
+
+rule pt_to_rqtl:
+    input:
+        unpack(_rqtl_inputs),
+    output:
+        csv = join(OUT_DIR, 'ancestry_data', 'rqtl_genotypes.csv'),
+    params:
+        cross           = CROSS,
+        xchroms         = config['fit_hmm']['sexchrom'],
+        autosome_prior  = config['fit_hmm']['autosome_prior'],
+        x_prior         = config['fit_hmm']['x_prior'],
+        sex_all         = config['fit_hmm']['sex'],
+        par1_arg        = (lambda wc:
+            f' --par1 {join(OUT_DIR, "ancestry_data", "ancestry-probs-par1.thinned.tsv")}'
+            if F2 else ''),
+    log:
+        join(OUT_DIR, 'Logs', 'pt_to_rqtl.log')
+    message:
+        '--- Converting to r/qtl CSV (cross={params.cross})'
+    threads: 1
+    resources:
+        mem_mb=8000
+    conda:
+        'envs/msg_py3.yml'
+    shell:
+        'python {SCRIPTS_DIR}/tsv_to_rqtl.py'
+            ' --cross {params.cross}'
+            ' --par2 {input.par2}'
+            '{params.par1_arg}'
+            ' --output {output.csv}'
+            ' --xchroms {params.xchroms}'
+            ' --autosome-prior {params.autosome_prior}'
+            ' --x-prior {params.x_prior}'
+            ' --sex-all {params.sex_all}'
+            ' --phenofile {input.pheno}'
+            ' > {log} 2>&1'
+
+##--------------------------------------------------------------------------------------##
+## samtools flagstat / stats / idxstats per sorted BAM (feeds MultiQC)
+##--------------------------------------------------------------------------------------##
+
+rule samtools_stats:
+    input:
+        bam = join(OUT_DIR, 'bam_dir', '{sample}_{parent}.sorted.bam'),
+        bai = join(OUT_DIR, 'bam_dir', '{sample}_{parent}.sorted.bam.bai'),
+    output:
+        flagstat = join(OUT_DIR, 'qc', 'samtools',
+                        '{sample}_{parent}.flagstat.txt'),
+        stats    = join(OUT_DIR, 'qc', 'samtools',
+                        '{sample}_{parent}.stats.txt'),
+        idxstats = join(OUT_DIR, 'qc', 'samtools',
+                        '{sample}_{parent}.idxstats.txt'),
+    log:
+        join(OUT_DIR, 'Logs', 'samtools_stats', '{sample}_{parent}.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'samtools_stats',
+             '{sample}_{parent}.benchmark.tsv')
+    message:
+        '--- samtools stats: {wildcards.sample} → {wildcards.parent}'
+    threads: 2
+    resources:
+        mem_mb=2000
+    conda:
+        'envs/msg_py3.yml'
+    wildcard_constraints:
+        parent = '|'.join(PARENTS.keys())
+    shell:
+        '(samtools flagstat -@ {threads} {input.bam} > {output.flagstat}'
+        ' && samtools stats    -@ {threads} {input.bam} > {output.stats}'
+        ' && samtools idxstats          {input.bam} > {output.idxstats}'
+        ') 2> {log}'
+
+##--------------------------------------------------------------------------------------##
+## MultiQC: collate fastQC, cutadapt, bwa-mem, qualimap (aligned + filtered),
+## and samtools stats into a single report.
+##--------------------------------------------------------------------------------------##
+
 rule multiQC:
     input:
-        expand(join(OUT_DIR, 'bamqc', '{sample}', 'qualimapReport.html'), sample = SAMPLES),
-        expand(join(OUT_DIR, 'fastQC', '{sample}.R1_fastqc.html'), sample = SAMPLES),
-        expand(join(OUT_DIR, 'fastQC_trim', '{sample}.R1_fastqc.html'), sample = SAMPLES)
+        expand(join(OUT_DIR, 'fastQC',      '{sample}.R1_fastqc.html'),
+               sample=SAMPLES),
+        expand(join(OUT_DIR, 'fastQC_trim', '{sample}.R1_fastqc.html'),
+               sample=SAMPLES),
+        expand(join(OUT_DIR, 'Logs', 'cutadapt', '{sample}.cutadapt.log'),
+               sample=SAMPLES),
+        expand(join(OUT_DIR, 'Logs', 'bwa_mem', '{sample}_{parent}.log'),
+               sample=SAMPLES, parent=PARENTS.keys()),
+        expand(join(OUT_DIR, 'bamqc', 'aligned',
+                    '{sample}_{parent}', 'qualimapReport.html'),
+               sample=SAMPLES, parent=PARENTS.keys()),
+        expand(join(OUT_DIR, 'bamqc', 'filtered',
+                    '{sample}_par1', 'qualimapReport.html'),
+               sample=SAMPLES),
+        expand(join(OUT_DIR, 'qc', 'samtools',
+                    '{sample}_{parent}.flagstat.txt'),
+               sample=SAMPLES, parent=PARENTS.keys()),
+        expand(join(OUT_DIR, 'qc', 'samtools',
+                    '{sample}_{parent}.stats.txt'),
+               sample=SAMPLES, parent=PARENTS.keys()),
+        expand(join(OUT_DIR, 'qc', 'samtools',
+                    '{sample}_{parent}.idxstats.txt'),
+               sample=SAMPLES, parent=PARENTS.keys()),
     output:
-        file = join(OUT_DIR, 'MultiQC', 'multiqc_report.html')
+        report = join(OUT_DIR, 'MultiQC', 'multiqc_report.html'),
+    params:
+        outdir = join(OUT_DIR, 'MultiQC'),
+        scan_dirs = ' '.join([
+            join(OUT_DIR, 'fastQC'),
+            join(OUT_DIR, 'fastQC_trim'),
+            join(OUT_DIR, 'Logs', 'cutadapt'),
+            join(OUT_DIR, 'Logs', 'bwa_mem'),
+            join(OUT_DIR, 'bamqc'),
+            join(OUT_DIR, 'qc', 'samtools'),
+        ]),
     log:
         join(OUT_DIR, 'Logs', 'MultiQC', 'multiQC.log')
     benchmark:
         join(OUT_DIR, 'Benchmarks', 'MultiQC', 'multiQC.benchmark.tsv')
     message:
-        """--- Running MultiQC """
+        '--- Running MultiQC'
+    threads: 1
+    resources:
+        mem_mb=4000
     conda:
-        'envs/DaGRP.yml'
+        'envs/msg_py3.yml'
     shell:
-        'ls -1 ' + join(OUT_DIR) + '/bamqc/* | grep ":" | sed "s/://g" >> ' + join(OUT_DIR, 'MultiQC', 'summary_files.txt') +
-        ' && ls -1 ' + join(OUT_DIR) + '/fastQC/*fastqc.zip >> ' + join(OUT_DIR, 'MultiQC', 'summary_files.txt') +
-        ' && ls -1 ' + join(OUT_DIR) + '/fastQC_trim/*fastqc.zip >> ' + join(OUT_DIR, 'MultiQC', 'summary_files.txt') +  
-        ' && multiqc'
-                ' -f'
-                ' -o ' + join(OUT_DIR, 'MultiQC') + ' -d -dd 1 -l ' + join(OUT_DIR, 'MultiQC', 'summary_files.txt') +
-                ' > {log} 2>&1'
+        'multiqc -f -o {params.outdir} -d -dd 1 {params.scan_dirs}'
+        ' > {log} 2>&1'
+

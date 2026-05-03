@@ -1,0 +1,15 @@
+name: msg_py3
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - bwa=0.7.17
+  - samtools>=1.18
+  - pysam>=0.22
+  - biopython>=1.83
+  - numpy>=1.26
+  - pyfaidx>=0.7
+  - fastqc>=0.12
+  - qualimap>=2.3
+  - multiqc>=1.21
