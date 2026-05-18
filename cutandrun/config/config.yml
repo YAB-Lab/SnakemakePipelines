@@ -1,0 +1,104 @@
+# ============================================================
+# YabLab CUT&RUN Snakemake Pipeline — config
+# ============================================================
+
+# ---- Reference genome ----
+DNA: '/home/yahmed/GitHub_Repositories/cutandrun/yablab_cutandrun_pipeline/genome/dm6.fa'           # path to target genome FASTA (uncompressed)
+GTF: '/home/yahmed/GitHub_Repositories/cutandrun/yablab_cutandrun_pipeline/genome/dm6.ensGene.gtf'           # path to target genome GTF
+MITO_ID: 'chrM'       # mitochondrial chromosome ID in the target FASTA (e.g. 'chrM')
+BLACKLIST: ''     # optional BED of blacklisted regions; '' to skip
+
+# ---- Spike-in (optional) ----
+# CUT&RUN typically uses E. coli K12 carryover as spike-in.
+USE_SPIKEIN: false
+SPIKEIN_FASTA: ''                       # path to spike-in FASTA (e.g. E. coli K12)
+SPIKEIN_SCALE_CONSTANT: 10000           # scaling = SPIKEIN_SCALE_CONSTANT / spikein_aligned_reads
+
+# ---- IO ----
+OUT_DIR: '/home/yahmed/GitHub_Repositories/cutandrun/yablab_cutandrun_pipeline/OUTPUT'                  # output directory (will be created)
+PE_SAMPLES_JSON: '/home/yahmed/GitHub_Repositories/cutandrun/yablab_cutandrun_pipeline/samples_pe.json'          # JSON mapping every sample name -> {R1: [...], R2: [...]}
+
+# ---- Replicate groupings ----
+# Target sample groups: <group_name> -> list of replicate sample IDs.
+# Each replicate ID must exist as a key in PE_SAMPLES_JSON.
+GROUPS:
+  cond_1:
+    - FL4
+    - FL22
+  cond_2:
+    - FL8
+    - FL26
+  cond_3:
+    - FL12
+    - FL30
+
+# ---- Controls ----
+# IgG is the default control for every target group unless overridden in
+# SAMPLE_CONTROLS below. List replicate IDs (must also be present in
+# PE_SAMPLES_JSON). All listed replicates of a control type are pooled into
+# a single control track used for peak calling.
+IGG_SAMPLES:
+  - FL2
+  - FL20
+
+# Optional second control type. Leave empty if not used.
+PANH3_SAMPLES: []
+#   - panh3_rep1
+#   - panh3_rep2
+
+# Per-target-group control assignment. Any group not listed here uses 'IgG'.
+# Valid values: 'IgG' or 'panH3'.
+SAMPLE_CONTROLS: {}
+#   h3k9me3: panH3
+
+# ---- Trimming ----
+# CUT&RUN reads frequently contain Nextera (Tn5) AND TruSeq adapter sequences.
+CUTADAPT_ADAPTERS: "-a AGATCGGAAGAGCACACGTCTGAACTCCAGTCA -a CTGTCTCTTATACACATCT -A AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT -A CTGTCTCTTATACACATCT"
+CUTADAPT_EXTRA: "--minimum-length 20 -q 20"
+
+# ---- Bowtie2 alignment (CUT&RUN-tuned, Henikoff lab defaults) ----
+BOWTIE2_TARGET_PARAMS: "--end-to-end --very-sensitive --no-mixed --no-discordant --phred33 -I 10 -X 700"
+BOWTIE2_SPIKEIN_PARAMS: "--end-to-end --very-sensitive --no-mixed --no-discordant --phred33 -I 10 -X 700 --no-overlap --no-dovetail"
+
+# ---- Read filtering ----
+MIN_MAPQ: 30
+# Picard MarkDuplicates is run on every sample; duplicates are REMOVED for
+# control samples (IgG, panH3) only, kept for target samples by default.
+# Toggle below to also remove duplicates from target samples.
+REMOVE_DUPS_TARGETS: false
+
+# ---- Peak calling ----
+# MACS3
+MACS3_GSIZE: '1.4e8'        # e.g. '1.2e8' for C. elegans, '2.7e9' for human. Required.
+MACS3_QVALUE: 0.05
+MACS3_EXTRA: "--nomodel --keep-dup all --call-summits -B --SPMR"
+
+# SEACR
+SEACR_THRESHOLD: 0.05  # numeric threshold; only used when no control bedGraph
+SEACR_MODE: "stringent"     # 'stringent' or 'relaxed'
+SEACR_NORM: "non"           # 'norm' or 'non' — 'non' if spike-in-scaled bedGraphs already
+
+# ---- DeepTools heatmaps ----
+DT_BIN_SIZE: 50
+DT_REGION_BODY: 3000
+DT_BEFORE_REGION: 3000
+DT_AFTER_REGION: 3000
+
+# ---- DeepTools peak-centered heatmaps ----
+# Window around each peak summit (reference-point mode).
+DT_PEAK_BEFORE: 3000
+DT_PEAK_AFTER:  3000
+
+# ---- DeepTools QC (multiBamSummary / correlation / PCA / fingerprint) ----
+DT_QC_BIN_SIZE:        10000       # bin size for multiBamSummary
+DT_QC_CORR_METHOD:     "spearman"  # 'spearman' or 'pearson' for plotCorrelation
+DT_FINGERPRINT_SAMPLES: 500000     # --numberOfSamples for plotFingerprint
+DT_FINGERPRINT_BINSIZE: 500        # --binSize for plotFingerprint
+
+# ---- DiffBind ----
+# Which per-replicate peak file feeds DiffBind: 'macs3' (narrowPeak) or 'seacr' (bed).
+DIFFBIND_PEAKCALLER: "macs3"
+# Minimum number of replicate overlaps to keep a peak in the consensus set.
+DIFFBIND_MIN_OVERLAP: 2
+# FDR threshold reported by the differential analysis.
+DIFFBIND_FDR_THRESHOLD: 0.05

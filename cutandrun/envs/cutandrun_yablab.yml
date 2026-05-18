@@ -1,0 +1,43 @@
+ame: cutandrun_yablab
+channels:
+  - conda-forge
+  - bioconda
+  - nodefaults
+dependencies:
+  # Core
+  - python=3.10
+  - pip
+
+  # CLI bio tools
+  - bowtie2
+  - samtools
+  - bedtools
+  - macs3
+  - seacr
+  - picard
+  - trim-galore
+  - cutadapt
+  - fastqc
+  - multiqc
+  - deeptools
+  - preseq
+  - qualimap
+  - seqkit
+  - agat
+  - ucsc-bedclip
+  - ucsc-bedgraphtobigwig
+  - jq
+  - yq
+
+  # Python libs (for downstream / scripts)
+  - numpy
+  - scipy
+  - pandas
+  - scikit-learn
+  - matplotlib-base
+
+  # Java fonts for picard / qualimap
+  - fontconfig
+  - fonts-conda-ecosystem
+  - font-ttf-dejavu-sans-mono
+  - freetype

@@ -1,0 +1,1147 @@
+"""
+Author: Y. Ahmed-Braimah
+--- Snakemake workflow for CUT&RUN / CUT&Tag analysis
+    - Bowtie2 alignment to target genome (and optional spike-in)
+    - Optional spike-in scaling for bedGraph / bigWig tracks
+    - Per-target peak calling with MACS3 and SEACR
+    - Pooled IgG (default) or panH3 controls
+    - Naive overlap consensus peaks
+    - DeepTools heatmaps + MultiQC
+"""
+
+import json
+import os
+from os.path import join
+
+##--------------------------------------------------------------------------------------##
+## Config
+##--------------------------------------------------------------------------------------##
+
+configfile: 'config.yml'
+
+DNA       = config['DNA']
+GTF       = config['GTF']
+MITO_ID   = config['MITO_ID']
+BLACKLIST = config.get('BLACKLIST', '')
+OUT_DIR   = config['OUT_DIR']
+
+USE_SPIKEIN            = bool(config.get('USE_SPIKEIN', False))
+SPIKEIN_FASTA          = config.get('SPIKEIN_FASTA', '')
+SPIKEIN_SCALE_CONSTANT = int(config.get('SPIKEIN_SCALE_CONSTANT', 10000))
+
+GROUPS          = config['GROUPS']
+IGG_SAMPLES     = list(config.get('IGG_SAMPLES', []) or [])
+PANH3_SAMPLES   = list(config.get('PANH3_SAMPLES', []) or [])
+SAMPLE_CONTROLS = dict(config.get('SAMPLE_CONTROLS', {}) or {})
+
+CUTADAPT_ADAPTERS = config['CUTADAPT_ADAPTERS']
+CUTADAPT_EXTRA    = config['CUTADAPT_EXTRA']
+
+BT2_TARGET_PARAMS  = config['BOWTIE2_TARGET_PARAMS']
+BT2_SPIKEIN_PARAMS = config['BOWTIE2_SPIKEIN_PARAMS']
+
+MIN_MAPQ            = int(config.get('MIN_MAPQ', 30))
+REMOVE_DUPS_TARGETS = bool(config.get('REMOVE_DUPS_TARGETS', False))
+
+MACS3_GSIZE  = config['MACS3_GSIZE']
+MACS3_QVALUE = config['MACS3_QVALUE']
+MACS3_EXTRA  = config['MACS3_EXTRA']
+
+SEACR_THRESHOLD = config['SEACR_THRESHOLD']
+SEACR_MODE      = config['SEACR_MODE']
+SEACR_NORM      = config['SEACR_NORM']
+
+DT_BIN_SIZE       = int(config['DT_BIN_SIZE'])
+DT_REGION_BODY    = int(config['DT_REGION_BODY'])
+DT_BEFORE_REGION  = int(config['DT_BEFORE_REGION'])
+DT_AFTER_REGION   = int(config['DT_AFTER_REGION'])
+
+DT_PEAK_BEFORE          = int(config.get('DT_PEAK_BEFORE', 3000))
+DT_PEAK_AFTER           = int(config.get('DT_PEAK_AFTER', 3000))
+DT_QC_BIN_SIZE          = int(config.get('DT_QC_BIN_SIZE', 10000))
+DT_QC_CORR_METHOD       = config.get('DT_QC_CORR_METHOD', 'spearman')
+DT_FINGERPRINT_SAMPLES  = int(config.get('DT_FINGERPRINT_SAMPLES', 500000))
+DT_FINGERPRINT_BINSIZE  = int(config.get('DT_FINGERPRINT_BINSIZE', 500))
+
+DIFFBIND_PEAKCALLER     = config.get('DIFFBIND_PEAKCALLER', 'macs3').lower()
+DIFFBIND_MIN_OVERLAP    = int(config.get('DIFFBIND_MIN_OVERLAP', 2))
+DIFFBIND_FDR_THRESHOLD  = float(config.get('DIFFBIND_FDR_THRESHOLD', 0.05))
+if DIFFBIND_PEAKCALLER not in ('macs3', 'seacr'):
+    raise ValueError(f"DIFFBIND_PEAKCALLER must be 'macs3' or 'seacr' (got '{DIFFBIND_PEAKCALLER}')")
+DIFFBIND_CONDA_ENV = 'envs/diffbind.yml'
+
+FILES = json.load(open(config['PE_SAMPLES_JSON']))
+
+
+TARGET_SAMPLES  = sorted({s for reps in GROUPS.values() for s in reps})
+CONTROL_SAMPLES = sorted(set(IGG_SAMPLES) | set(PANH3_SAMPLES))
+ALL_SAMPLES     = sorted(set(TARGET_SAMPLES) | set(CONTROL_SAMPLES))
+
+# ---- Validate config ----
+for s in ALL_SAMPLES:
+    if s not in FILES:
+        raise ValueError(f"Sample '{s}' referenced in config but missing from PE_SAMPLES_JSON")
+for grp, ct in SAMPLE_CONTROLS.items():
+    if ct not in ('IgG', 'panH3'):
+        raise ValueError(f"SAMPLE_CONTROLS[{grp}] = '{ct}' invalid; must be 'IgG' or 'panH3'")
+    if grp not in GROUPS:
+        raise ValueError(f"SAMPLE_CONTROLS references unknown group '{grp}'")
+
+def control_type_for(group):
+    return SAMPLE_CONTROLS.get(group, 'IgG')
+
+def control_samples_for(ctrl_type):
+    return IGG_SAMPLES if ctrl_type == 'IgG' else PANH3_SAMPLES
+
+# Distinct control types actually used (so we only pool what we need)
+USED_CONTROL_TYPES = sorted({control_type_for(g) for g in GROUPS} &
+                            {'IgG', 'panH3'})
+# Drop control types whose sample list is empty
+USED_CONTROL_TYPES = [ct for ct in USED_CONTROL_TYPES if control_samples_for(ct)]
+
+# Map target group -> assigned control pool BAM / bedGraph (or '' if none)
+def control_bam_for(group):
+    ct = control_type_for(group)
+    if not control_samples_for(ct):
+        return ''
+    return join(OUT_DIR, 'pooled_controls', f'{ct}.pooled.bam')
+
+def control_bedgraph_for(group):
+    ct = control_type_for(group)
+    if not control_samples_for(ct):
+        return ''
+    return join(OUT_DIR, 'pooled_controls', f'{ct}.pooled.bedgraph')
+
+def group_of(sample):
+    """Return the target group that owns this sample (KeyError if not a target)."""
+    return next(g for g, reps in GROUPS.items() if sample in reps)
+
+os.makedirs(OUT_DIR, exist_ok=True)
+
+CONDA_ENV = 'envs/cutandrun_yablab.yml'
+
+##--------------------------------------------------------------------------------------##
+## Targets
+##--------------------------------------------------------------------------------------##
+
+rule all:
+    input:
+        join(OUT_DIR, 'MultiQC', 'multiqc_report.html'),
+        # MACS3 + SEACR per-replicate peak calls
+        expand(join(OUT_DIR, 'MACS3', '{sample}', '{sample}_peaks.narrowPeak'),
+               sample=TARGET_SAMPLES),
+        expand(join(OUT_DIR, 'SEACR', '{sample}', '{sample}.' + SEACR_MODE + '.bed'),
+               sample=TARGET_SAMPLES),
+        # Consensus (naive-overlap) peaks per target group
+        expand(join(OUT_DIR, 'MACS3', '{group}', 'finalPeakList.narrowPeak.gz'),
+               group=list(GROUPS.keys())),
+        expand(join(OUT_DIR, 'SEACR', '{group}', 'finalPeakList.bed.gz'),
+               group=list(GROUPS.keys())),
+        # BigWigs (for IGV / heatmaps)
+        expand(join(OUT_DIR, 'BigWig', '{sample}.bigwig'), sample=ALL_SAMPLES),
+        # DeepTools per-sample gene-body heatmaps
+        expand(join(OUT_DIR, 'DeepTools', 'per_sample', 'genes', '{sample}.heatmap.png'),
+               sample=TARGET_SAMPLES),
+        # DeepTools per-sample peak-centered heatmaps (MACS3 + SEACR)
+        expand(join(OUT_DIR, 'DeepTools', 'per_sample', 'peaks_macs3', '{sample}.heatmap.png'),
+               sample=TARGET_SAMPLES),
+        expand(join(OUT_DIR, 'DeepTools', 'per_sample', 'peaks_seacr', '{sample}.heatmap.png'),
+               sample=TARGET_SAMPLES),
+        # DeepTools QC suite
+        join(OUT_DIR, 'DeepTools', 'qc', 'correlation.heatmap.png'),
+        join(OUT_DIR, 'DeepTools', 'qc', 'pca.png'),
+        expand(join(OUT_DIR, 'DeepTools', 'qc', 'fingerprint', '{sample}.png'),
+               sample=ALL_SAMPLES),
+        # DiffBind: samplesheet + executed notebook + analysis RDS
+        join(OUT_DIR, 'DiffBind', 'samplesheet.csv'),
+        join(OUT_DIR, 'DiffBind', 'diffbind_analysis.executed.ipynb'),
+        join(OUT_DIR, 'DiffBind', 'dba_analysis.rds'),
+
+##--------------------------------------------------------------------------------------##
+## QC
+##--------------------------------------------------------------------------------------##
+
+rule fastqc:
+    input:
+        r1 = lambda wc: FILES[wc.sample]['R1'],
+        r2 = lambda wc: FILES[wc.sample]['R2'],
+    output:
+        r1 = join(OUT_DIR, 'fastQC', '{sample}.R1_fastqc.html'),
+        r2 = join(OUT_DIR, 'fastQC', '{sample}.R2_fastqc.html'),
+    log:
+        join(OUT_DIR, 'Logs', 'fastQC', '{sample}.fastQC.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'fastQC', '{sample}.benchmark.tsv')
+    message:
+        '--- FastQC on sample "{wildcards.sample}"'
+    threads: 4
+    conda: CONDA_ENV
+    shell:
+        'fastqc -o ' + join(OUT_DIR, 'fastQC') +
+        ' -t {threads} -q {input.r1} {input.r2} > {log} 2>&1'
+
+##--------------------------------------------------------------------------------------##
+
+rule cutadapt:
+    input:
+        lambda wc: FILES[wc.sample]['R1'],
+        lambda wc: FILES[wc.sample]['R2'],
+    output:
+        fastq1 = join(OUT_DIR, 'trimmed_reads', '{sample}.1.fq.gz'),
+        fastq2 = join(OUT_DIR, 'trimmed_reads', '{sample}.2.fq.gz'),
+        qc     = join(OUT_DIR, 'trimmed_reads', '{sample}.qc.txt'),
+    params:
+        adapters = CUTADAPT_ADAPTERS,
+        extra    = CUTADAPT_EXTRA,
+    log:
+        join(OUT_DIR, 'Logs', 'cutadapt', '{sample}.cutadapt.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'cutadapt', '{sample}.benchmark.tsv')
+    message:
+        '--- Trimming adapters for sample "{wildcards.sample}"'
+    threads: 4
+    resources:
+        mem_mb = 8000
+    wrapper:
+        "v3.10.2/bio/cutadapt/pe"
+
+##--------------------------------------------------------------------------------------##
+## Reference prep
+##--------------------------------------------------------------------------------------##
+
+rule bowtie2_build_target:
+    output:
+        reference = join(OUT_DIR, 'reference', 'target', 'genome.fasta'),
+        idx       = join(OUT_DIR, 'reference', 'target', 'genome.rev.2.bt2'),
+    log:
+        join(OUT_DIR, 'Logs', 'Bowtie2', 'target.bowtie2-build.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'Bowtie2', 'target.bt2-build.benchmark.tsv')
+    threads: 8
+    conda: CONDA_ENV
+    shell:
+        'cp ' + DNA + ' {output.reference}'
+        ' && bowtie2-build --threads {threads} {output.reference} ' +
+        join(OUT_DIR, 'reference', 'target', 'genome') + ' > {log} 2>&1'
+
+rule bowtie2_build_spikein:
+    output:
+        reference = join(OUT_DIR, 'reference', 'spikein', 'genome.fasta'),
+        idx       = join(OUT_DIR, 'reference', 'spikein', 'genome.rev.2.bt2'),
+    log:
+        join(OUT_DIR, 'Logs', 'Bowtie2', 'spikein.bowtie2-build.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'Bowtie2', 'spikein.bt2-build.benchmark.tsv')
+    threads: 8
+    conda: CONDA_ENV
+    shell:
+        'cp ' + SPIKEIN_FASTA + ' {output.reference}'
+        ' && bowtie2-build --threads {threads} {output.reference} ' +
+        join(OUT_DIR, 'reference', 'spikein', 'genome') + ' > {log} 2>&1'
+
+rule compute_chrom_sizes:
+    input:
+        reference = join(OUT_DIR, 'reference', 'target', 'genome.fasta')
+    output:
+        cs  = join(OUT_DIR, 'reference', 'target', 'chrom_sizes.txt'),
+        fai = join(OUT_DIR, 'reference', 'target', 'genome.fasta.fai'),
+    conda: CONDA_ENV
+    shell:
+        'samtools faidx {input.reference}'
+        ' && cut -f1,2 {output.fai} > {output.cs}'
+
+rule extract_gene_bodies:
+    """Extract gene bodies as BED. If the GTF lacks 'gene' features in column 3,
+    reconstruct them from transcript/exon hierarchy with AGAT first. AGAT's
+    side-effects (agat_config.yaml, .agat.log) are confined to agat_workdir/
+    under the reference output so the working directory stays clean."""
+    input:
+        gtf = GTF
+    output:
+        bed = join(OUT_DIR, 'reference', 'target', 'genes.bed')
+    params:
+        gtf_fixed = join(OUT_DIR, 'reference', 'target', 'genes.fixed.gtf'),
+        agat_wd   = join(OUT_DIR, 'reference', 'target', 'agat_workdir'),
+    log:
+        join(OUT_DIR, 'Logs', 'reference', 'extract_gene_bodies.log')
+    conda: CONDA_ENV
+    shell:
+        r'''
+        set -euo pipefail
+        mkdir -p $(dirname {log}) {params.agat_wd}
+        has_gene=$(awk -F'\t' 'BEGIN{{f=0}} /^#/{{next}} $3=="gene"{{f=1; exit}} END{{print f}}' {input.gtf})
+        if [ "$has_gene" = "1" ]; then
+            echo "GTF already contains 'gene' features; skipping AGAT." > {log}
+            gtf={input.gtf}
+        else
+            echo "GTF lacks 'gene' features; reconstructing with AGAT..." > {log}
+            in_gtf=$(readlink -f {input.gtf})
+            out_gtf=$(readlink -f {params.gtf_fixed})
+            log_abs=$(readlink -f {log})
+            ( cd {params.agat_wd} && \
+              agat_convert_sp_gxf2gxf.pl -g "$in_gtf" -o "$out_gtf" >> "$log_abs" 2>&1 )
+            gtf={params.gtf_fixed}
+        fi
+        awk 'BEGIN{{OFS="\t"}} $3=="gene" {{print $1,$4-1,$5,".",".",$7}}' "$gtf" \
+            | sort -k1,1V -k2,2n > {output.bed}
+        '''
+
+##--------------------------------------------------------------------------------------##
+## Alignment
+##--------------------------------------------------------------------------------------##
+
+rule bowtie2_target:
+    input:
+        r1  = join(OUT_DIR, 'trimmed_reads', '{sample}.1.fq.gz'),
+        r2  = join(OUT_DIR, 'trimmed_reads', '{sample}.2.fq.gz'),
+        idx = join(OUT_DIR, 'reference', 'target', 'genome.rev.2.bt2'),
+    output:
+        cbam = join(OUT_DIR, 'Bowtie2', 'target', '{sample}.csorted.bam'),
+        nbam = join(OUT_DIR, 'Bowtie2', 'target', '{sample}.nsorted.bam'),
+    params:
+        bt2 = BT2_TARGET_PARAMS,
+    log:
+        bt2 = join(OUT_DIR, 'Logs', 'Bowtie2', '{sample}.target.bowtie2.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'Bowtie2', '{sample}.target.benchmark.tsv')
+    message:
+        '--- Aligning "{wildcards.sample}" to target genome'
+    threads: 8
+    resources:
+        mem_mb = 16000
+    conda: CONDA_ENV
+    shell:
+        '(bowtie2 {params.bt2}'
+        ' --mm -p {threads}'
+        ' --rg-id i{wildcards.sample} --rg SM:{wildcards.sample}'
+        ' -x ' + join(OUT_DIR, 'reference', 'target', 'genome') +
+        ' -1 {input.r1} -2 {input.r2})'
+        ' 2> {log.bt2}'
+        ' | samtools sort -n -@ {threads} -o {output.nbam} -'
+        ' && samtools sort --threads {threads} -o {output.cbam} {output.nbam}'
+        ' && samtools index -@ 4 {output.cbam}'
+
+rule bowtie2_spikein:
+    input:
+        r1  = join(OUT_DIR, 'trimmed_reads', '{sample}.1.fq.gz'),
+        r2  = join(OUT_DIR, 'trimmed_reads', '{sample}.2.fq.gz'),
+        idx = join(OUT_DIR, 'reference', 'spikein', 'genome.rev.2.bt2'),
+    output:
+        bam   = join(OUT_DIR, 'Bowtie2', 'spikein', '{sample}.bam'),
+        stats = join(OUT_DIR, 'Bowtie2', 'spikein', '{sample}.flagstat'),
+    params:
+        bt2 = BT2_SPIKEIN_PARAMS,
+    log:
+        bt2 = join(OUT_DIR, 'Logs', 'Bowtie2', '{sample}.spikein.bowtie2.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'Bowtie2', '{sample}.spikein.benchmark.tsv')
+    message:
+        '--- Aligning "{wildcards.sample}" to spike-in genome'
+    threads: 8
+    resources:
+        mem_mb = 8000
+    conda: CONDA_ENV
+    shell:
+        '(bowtie2 {params.bt2} --mm -p {threads}'
+        ' -x ' + join(OUT_DIR, 'reference', 'spikein', 'genome') +
+        ' -1 {input.r1} -2 {input.r2})'
+        ' 2> {log.bt2}'
+        ' | samtools sort -@ {threads} -o {output.bam} -'
+        ' && samtools index -@ 4 {output.bam}'
+        ' && samtools flagstat -@ 4 {output.bam} > {output.stats}'
+
+##--------------------------------------------------------------------------------------##
+## Filter, mark/remove duplicates
+##--------------------------------------------------------------------------------------##
+
+rule qualimap:
+    input:
+        bam = join(OUT_DIR, 'Bowtie2', 'target', '{sample}.csorted.bam'),
+    output:
+        bamqc = join(OUT_DIR, 'Bowtie2', 'target', '{sample}', 'bamqc', 'qualimapReport.html')
+    log:
+        join(OUT_DIR, 'Logs', 'Qualimap', '{sample}.bamqc.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'Qualimap', '{sample}.benchmark.tsv')
+    message:
+        '--- Qualimap BAMQC on "{wildcards.sample}"'
+    threads: 8
+    resources:
+        mem_mb = 32000
+    conda: CONDA_ENV
+    shell:
+        'qualimap bamqc -bam {input.bam} -c'
+        ' -outdir ' + join(OUT_DIR, 'Bowtie2', 'target', '{wildcards.sample}', 'bamqc') +
+        ' --java-mem-size=32G -nt {threads} > {log} 2>&1'
+
+def _remove_dups_flag(wildcards):
+    """REMOVE_DUPLICATES=true for controls and (optionally) targets."""
+    if wildcards.sample in CONTROL_SAMPLES:
+        return 'true'
+    return 'true' if REMOVE_DUPS_TARGETS else 'false'
+
+rule mark_duplicates:
+    input:
+        cbam = join(OUT_DIR, 'Bowtie2', 'target', '{sample}.csorted.bam')
+    output:
+        fbam     = join(OUT_DIR, 'Bowtie2', 'target', '{sample}.filt.bam'),
+        bai      = join(OUT_DIR, 'Bowtie2', 'target', '{sample}.filt.bam.bai'),
+        metrics  = join(OUT_DIR, 'Bowtie2', 'target', '{sample}.dupmark.metrics'),
+        idxstats = join(OUT_DIR, 'Bowtie2', 'target', '{sample}.idxstats'),
+        flagstat = join(OUT_DIR, 'Bowtie2', 'target', '{sample}.flagstat'),
+    params:
+        min_mapq    = MIN_MAPQ,
+        remove_dups = _remove_dups_flag,
+        blacklist   = BLACKLIST,
+    threads: 8
+    resources:
+        mem_mb = 16000
+    log:
+        join(OUT_DIR, 'Logs', 'Bowtie2', '{sample}.dupmark.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'Bowtie2', '{sample}.dupmark.benchmark.tsv')
+    message:
+        '--- Filtering + Picard MarkDuplicates on "{wildcards.sample}" (remove_dups={params.remove_dups})'
+    conda: CONDA_ENV
+    shell:
+        # 1) MAPQ + proper-pair filter + name-sort + fixmate
+        'samtools view -F 1804 -f 2 -q {params.min_mapq} -u {input.cbam}'
+        ' | samtools sort -@ {threads} -n -o {wildcards.sample}.tmp.namesort.bam -'
+        ' && samtools fixmate -r {wildcards.sample}.tmp.namesort.bam {wildcards.sample}.tmp.fixmate.bam'
+        ' && samtools view -F 1804 -f 2 -u {wildcards.sample}.tmp.fixmate.bam'
+        ' | samtools sort -@ {threads} -o {wildcards.sample}.tmp.csorted.bam -'
+        # 2) Picard MarkDuplicates
+        ' && picard MarkDuplicates'
+        '   I={wildcards.sample}.tmp.csorted.bam'
+        '   O={wildcards.sample}.tmp.dupmark.bam'
+        '   M={output.metrics}'
+        '   REMOVE_DUPLICATES={params.remove_dups}'
+        '   VALIDATION_STRINGENCY=LENIENT ASSUME_SORTED=true > {log} 2>&1'
+        # 3) Optional blacklist subtraction
+        + (' && bedtools intersect -v -abam {wildcards.sample}.tmp.dupmark.bam -b ' + BLACKLIST +
+           ' > {output.fbam}' if BLACKLIST else
+           ' && mv {wildcards.sample}.tmp.dupmark.bam {output.fbam}') +
+        ' && samtools index -@ 4 {output.fbam}'
+        ' && samtools idxstats {output.fbam} > {output.idxstats}'
+        ' && samtools flagstat -@ 4 {output.fbam} > {output.flagstat}'
+        ' && rm -f {wildcards.sample}.tmp.namesort.bam'
+        '          {wildcards.sample}.tmp.fixmate.bam'
+        '          {wildcards.sample}.tmp.csorted.bam'
+        '          {wildcards.sample}.tmp.dupmark.bam'
+
+##--------------------------------------------------------------------------------------##
+## Spike-in scale factors
+##--------------------------------------------------------------------------------------##
+
+rule spikein_scale_factor:
+    input:
+        flagstat = join(OUT_DIR, 'Bowtie2', 'spikein', '{sample}.flagstat')
+    output:
+        sf = join(OUT_DIR, 'Bowtie2', 'spikein', '{sample}.scalefactor.txt')
+    params:
+        c = SPIKEIN_SCALE_CONSTANT
+    shell:
+        # Mapped reads = line 7 ("mapped") field 1 in samtools flagstat output.
+        r'''mapped=$(grep -m1 'primary mapped' {input.flagstat} | awk '{{print $1}}'); '''
+        r'''if [ -z "$mapped" ]; then mapped=$(awk 'NR==5 {{print $1}}' {input.flagstat}); fi; '''
+        r'''if [ "$mapped" -gt 0 ]; then awk -v c={params.c} -v m=$mapped 'BEGIN{{printf "%.6f\n", c/m}}' > {output.sf}; '''
+        r'''else echo "1.0" > {output.sf}; fi'''
+
+##--------------------------------------------------------------------------------------##
+## BedGraph / BigWig (per sample)
+##--------------------------------------------------------------------------------------##
+
+def _bedgraph_inputs(wildcards):
+    d = {
+        'bam': join(OUT_DIR, 'Bowtie2', 'target', f'{wildcards.sample}.filt.bam'),
+        'cs':  join(OUT_DIR, 'reference', 'target', 'chrom_sizes.txt'),
+    }
+    if USE_SPIKEIN:
+        d['sf'] = join(OUT_DIR, 'Bowtie2', 'spikein', f'{wildcards.sample}.scalefactor.txt')
+    return d
+
+rule bam_to_bedgraph:
+    input:
+        unpack(_bedgraph_inputs)
+    output:
+        bg = join(OUT_DIR, 'BedGraph', '{sample}.bedgraph')
+    threads: 4
+    resources:
+        mem_mb = 8000
+    log:
+        join(OUT_DIR, 'Logs', 'BedGraph', '{sample}.bedgraph.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'BedGraph', '{sample}.benchmark.tsv')
+    message:
+        '--- BAM->bedGraph for "{wildcards.sample}"' +
+        (' (spike-in scaled)' if USE_SPIKEIN else ' (CPM)')
+    conda: CONDA_ENV
+    shell:
+        # paired-end fragments only (-pc), sorted output. Scale by spike-in or CPM (per fragment).
+        ('scale=$(cat {input.sf})' if USE_SPIKEIN else
+         # Count fragments: read1 of properly-paired alignments, excluding dup/secondary/unmapped.
+         'reads=$(samtools view -c -f 66 -F 1804 {input.bam}); '
+         r'''scale=$(awk -v r=$reads 'BEGIN{{if(r>0) printf "%.6f\n", 1000000.0/r; else print "1.0"}}')''') +
+        ' && bedtools genomecov -bg -pc -scale $scale -ibam {input.bam}'
+        ' | sort -k1,1 -k2,2n > {output.bg} 2> {log}'
+
+rule bedgraph_to_bigwig:
+    input:
+        bg = join(OUT_DIR, 'BedGraph', '{sample}.bedgraph'),
+        cs = join(OUT_DIR, 'reference', 'target', 'chrom_sizes.txt'),
+    output:
+        bw = join(OUT_DIR, 'BigWig', '{sample}.bigwig')
+    log:
+        join(OUT_DIR, 'Logs', 'BigWig', '{sample}.bigwig.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'BigWig', '{sample}.benchmark.tsv')
+    message:
+        '--- bedGraph->bigWig for "{wildcards.sample}"'
+    conda: CONDA_ENV
+    shell:
+        'bedClip {input.bg} {input.cs} {output.bw}.tmp.bg'
+        ' && sort -k1,1 -k2,2n {output.bw}.tmp.bg > {output.bw}.tmp.sorted.bg'
+        ' && bedGraphToBigWig {output.bw}.tmp.sorted.bg {input.cs} {output.bw} 2> {log}'
+        ' && rm -f {output.bw}.tmp.bg {output.bw}.tmp.sorted.bg'
+
+##--------------------------------------------------------------------------------------##
+## Pooled controls (merged across replicates of a control type)
+##--------------------------------------------------------------------------------------##
+
+rule pool_control_bam:
+    input:
+        bams = lambda wc: expand(join(OUT_DIR, 'Bowtie2', 'target', '{s}.filt.bam'),
+                                 s=control_samples_for(wc.ctrl_type))
+    output:
+        bam = join(OUT_DIR, 'pooled_controls', '{ctrl_type}.pooled.bam'),
+        bai = join(OUT_DIR, 'pooled_controls', '{ctrl_type}.pooled.bam.bai'),
+    threads: 4
+    resources:
+        mem_mb = 8000
+    message:
+        '--- Pooling control BAMs for type "{wildcards.ctrl_type}"'
+    conda: CONDA_ENV
+    shell:
+        'samtools merge -@ {threads} -f {output.bam} {input.bams}'
+        ' && samtools index -@ {threads} {output.bam}'
+
+rule pool_control_bedgraph:
+    input:
+        bgs = lambda wc: expand(join(OUT_DIR, 'BedGraph', '{s}.bedgraph'),
+                                s=control_samples_for(wc.ctrl_type))
+    output:
+        bg = join(OUT_DIR, 'pooled_controls', '{ctrl_type}.pooled.bedgraph')
+    message:
+        '--- Pooling control bedGraphs for type "{wildcards.ctrl_type}" (mean across reps)'
+    conda: CONDA_ENV
+    shell:
+        # Union of all positions, then mean over reps (-na 0 to count missing as 0).
+        'bedtools unionbedg -i {input.bgs}'
+        ' | awk \'BEGIN{{OFS="\\t"}}{{n=NF-3; s=0; for(i=4;i<=NF;i++) s+=$i; print $1,$2,$3,s/n}}\''
+        ' | sort -k1,1 -k2,2n > {output.bg}'
+
+##--------------------------------------------------------------------------------------##
+## Peak calling — MACS3 (per replicate)
+##--------------------------------------------------------------------------------------##
+
+def _macs3_inputs(wildcards):
+    grp  = group_of(wildcards.sample)
+    cbam = control_bam_for(grp)
+    d = {'bam': join(OUT_DIR, 'Bowtie2', 'target', f'{wildcards.sample}.filt.bam')}
+    if cbam:
+        d['ctrl'] = cbam
+    return d
+
+def _macs3_ctrl_arg(wildcards):
+    cbam = control_bam_for(group_of(wildcards.sample))
+    return ('-c ' + cbam) if cbam else ''
+
+rule macs3_callpeak:
+    input:
+        unpack(_macs3_inputs)
+    output:
+        peak    = join(OUT_DIR, 'MACS3', '{sample}', '{sample}_peaks.narrowPeak'),
+        peak_gz = join(OUT_DIR, 'MACS3', '{sample}', '{sample}.narrowPeak.gz'),
+    params:
+        gsize    = MACS3_GSIZE,
+        q        = MACS3_QVALUE,
+        extra    = MACS3_EXTRA,
+        outdir   = lambda wc: join(OUT_DIR, 'MACS3', wc.sample),
+        ctrl_arg = _macs3_ctrl_arg,
+    threads: 1
+    resources:
+        mem_mb = 16000
+    log:
+        join(OUT_DIR, 'Logs', 'MACS3', '{sample}.macs3.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'MACS3', '{sample}.benchmark.tsv')
+    message:
+        '--- MACS3 callpeak on "{wildcards.sample}"'
+    conda: CONDA_ENV
+    shell:
+        'macs3 callpeak -t {input.bam} {params.ctrl_arg}'
+        ' -f BAMPE -g {params.gsize} -q {params.q}'
+        ' --outdir {params.outdir} -n {wildcards.sample}'
+        ' {params.extra} > {log} 2>&1'
+        ' && sort -k 8gr,8gr {output.peak}'
+        ' | awk \'BEGIN{{OFS="\\t"}}{{$4="Peak_"NR; if ($2<0) $2=0; if ($3<0) $3=0; print $0}}\''
+        ' | gzip -nc > {output.peak_gz}'
+
+##--------------------------------------------------------------------------------------##
+## Peak calling — SEACR (per replicate)
+##--------------------------------------------------------------------------------------##
+
+def _seacr_inputs(wildcards):
+    grp = group_of(wildcards.sample)
+    cbg = control_bedgraph_for(grp)
+    d = {'bg': join(OUT_DIR, 'BedGraph', f'{wildcards.sample}.bedgraph')}
+    if cbg:
+        d['ctrl'] = cbg
+    return d
+
+def _seacr_ctrl_or_thresh(wildcards):
+    cbg = control_bedgraph_for(group_of(wildcards.sample))
+    return cbg if cbg else str(SEACR_THRESHOLD)
+
+rule seacr_callpeak:
+    input:
+        unpack(_seacr_inputs)
+    output:
+        bed    = join(OUT_DIR, 'SEACR', '{sample}', '{sample}.' + SEACR_MODE + '.bed'),
+        bed_gz = join(OUT_DIR, 'SEACR', '{sample}', '{sample}.bed.gz'),
+    params:
+        mode   = SEACR_MODE,
+        norm   = SEACR_NORM,
+        prefix = lambda wc: join(OUT_DIR, 'SEACR', wc.sample, wc.sample),
+        # bedGraph if a control pool exists, otherwise numeric threshold.
+        ctrl_or_thresh = _seacr_ctrl_or_thresh,
+    threads: 1
+    resources:
+        mem_mb = 8000
+    log:
+        join(OUT_DIR, 'Logs', 'SEACR', '{sample}.seacr.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'SEACR', '{sample}.benchmark.tsv')
+    message:
+        '--- SEACR callpeak on "{wildcards.sample}" (mode={params.mode}, norm={params.norm})'
+    conda: CONDA_ENV
+    shell:
+        'mkdir -p ' + join(OUT_DIR, 'SEACR', '{wildcards.sample}') +
+        ' && SEACR_1.3.sh {input.bg} {params.ctrl_or_thresh} {params.norm} {params.mode}'
+        ' {params.prefix} > {log} 2>&1'
+        ' && gzip -nc {output.bed} > {output.bed_gz}'
+
+##--------------------------------------------------------------------------------------##
+## Consensus (naive overlap) per target group
+##--------------------------------------------------------------------------------------##
+
+def _naive_overlap_cmd(beds, output_gz, n_fields=10):
+    """Chained bedtools intersect to keep peaks reproducible across replicates.
+
+    A peak is kept if >=50% of either side is in the overlap. n_fields is the
+    width of each input BED (10 for MACS3 narrowPeak, 6 for SEACR).
+    """
+    b_start = n_fields + 2      # column index of B.start in 1-based awk
+    b_end   = n_fields + 3      # column index of B.end
+    ov      = 2 * n_fields + 1  # column index of overlap (last column from -wo)
+    awk = (
+        f"awk 'BEGIN{{FS=\"\\t\";OFS=\"\\t\"}}"
+        f"{{s1=$3-$2; s2=${b_end}-${b_start}; "
+        f"if ((${ov}/s1 >= 0.5) || (${ov}/s2 >= 0.5)) print $0}}'"
+    )
+    cut = f"cut -f 1-{n_fields}"
+
+    if len(beds) == 1:
+        return f"zcat {beds[0]} | sort -k1,1 -k2,2n | uniq | gzip -nc > {output_gz}"
+
+    cmd = (f"intersectBed -wo -a {beds[0]} -b {beds[1]}"
+           f" | {awk} | {cut} | sort -k1,1 -k2,2n | uniq")
+    for b in beds[2:]:
+        cmd += (f" | intersectBed -wo -a stdin -b {b}"
+                f" | {awk} | {cut} | sort -k1,1 -k2,2n | uniq")
+    cmd += f" | gzip -nc > {output_gz}"
+    return cmd
+
+rule consensus_peaks_macs3:
+    input:
+        peaks = lambda wc: expand(join(OUT_DIR, 'MACS3', '{s}', '{s}.narrowPeak.gz'),
+                                  s=GROUPS[wc.group])
+    output:
+        final = join(OUT_DIR, 'MACS3', '{group}', 'finalPeakList.narrowPeak.gz')
+    params:
+        cmd = lambda wc: _naive_overlap_cmd(
+            [join(OUT_DIR, 'MACS3', s, f'{s}.narrowPeak.gz') for s in GROUPS[wc.group]],
+            join(OUT_DIR, 'MACS3', wc.group, 'finalPeakList.narrowPeak.gz'))
+    threads: 4
+    resources:
+        mem_mb = 8000
+    log:
+        join(OUT_DIR, 'Logs', 'MACS3', '{group}.naiveOverlap.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'MACS3', '{group}.naiveOverlap.tsv')
+    message:
+        '--- MACS3 naive-overlap consensus for group "{wildcards.group}"'
+    conda: CONDA_ENV
+    shell:
+        'mkdir -p ' + join(OUT_DIR, 'MACS3', '{wildcards.group}') + ' && {params.cmd}'
+
+rule consensus_peaks_seacr:
+    input:
+        peaks = lambda wc: expand(join(OUT_DIR, 'SEACR', '{s}', '{s}.bed.gz'),
+                                  s=GROUPS[wc.group])
+    output:
+        final = join(OUT_DIR, 'SEACR', '{group}', 'finalPeakList.bed.gz')
+    params:
+        cmd = lambda wc: _naive_overlap_cmd(
+            [join(OUT_DIR, 'SEACR', s, f'{s}.bed.gz') for s in GROUPS[wc.group]],
+            join(OUT_DIR, 'SEACR', wc.group, 'finalPeakList.bed.gz'),
+            n_fields=6)
+    threads: 4
+    resources:
+        mem_mb = 8000
+    log:
+        join(OUT_DIR, 'Logs', 'SEACR', '{group}.naiveOverlap.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'SEACR', '{group}.naiveOverlap.tsv')
+    message:
+        '--- SEACR naive-overlap consensus for group "{wildcards.group}"'
+    conda: CONDA_ENV
+    shell:
+        'mkdir -p ' + join(OUT_DIR, 'SEACR', '{wildcards.group}') + ' && {params.cmd}'
+
+##--------------------------------------------------------------------------------------##
+## Fragment length distribution
+##--------------------------------------------------------------------------------------##
+
+rule fragment_length:
+    input:
+        bam = join(OUT_DIR, 'Bowtie2', 'target', '{sample}.filt.bam')
+    output:
+        stat = join(OUT_DIR, 'Bowtie2', 'target', '{sample}.insert_size_metrics.txt'),
+        plot = join(OUT_DIR, 'Bowtie2', 'target', '{sample}.insert_size_histogram.pdf'),
+    threads: 4
+    resources:
+        mem_mb = 8000
+    log:
+        join(OUT_DIR, 'Logs', 'Picard', '{sample}.insertsize.log')
+    message:
+        '--- CollectInsertSizeMetrics for "{wildcards.sample}"'
+    conda: CONDA_ENV
+    shell:
+        'picard CollectInsertSizeMetrics'
+        ' I={input.bam} O={output.stat} H={output.plot} W=1000'
+        ' VERBOSITY=ERROR QUIET=TRUE STOP_AFTER=5000000'
+        ' USE_JDK_DEFLATER=TRUE USE_JDK_INFLATER=TRUE > {log} 2>&1'
+
+##--------------------------------------------------------------------------------------##
+## DeepTools heatmaps (gene-body)
+##--------------------------------------------------------------------------------------##
+
+rule deeptools_computeMatrix_genes:
+    input:
+        bws = expand(join(OUT_DIR, 'BigWig', '{s}.bigwig'), s=TARGET_SAMPLES),
+        bed = join(OUT_DIR, 'reference', 'target', 'genes.bed'),
+    output:
+        matrix = join(OUT_DIR, 'DeepTools', 'genes.matrix.gz')
+    params:
+        bs = DT_BIN_SIZE,
+        body = DT_REGION_BODY,
+        before = DT_BEFORE_REGION,
+        after = DT_AFTER_REGION,
+    threads: 8
+    resources:
+        mem_mb = 16000
+    log:
+        join(OUT_DIR, 'Logs', 'DeepTools', 'computeMatrix.genes.log')
+    conda: CONDA_ENV
+    shell:
+        'computeMatrix scale-regions'
+        ' -S {input.bws} -R {input.bed}'
+        ' -b {params.before} -a {params.after} -m {params.body}'
+        ' --binSize {params.bs} --skipZeros -p {threads}'
+        ' -o {output.matrix} > {log} 2>&1'
+
+rule deeptools_plotHeatmap_genes:
+    input:
+        matrix = join(OUT_DIR, 'DeepTools', 'genes.matrix.gz')
+    output:
+        png = join(OUT_DIR, 'DeepTools', 'genes.heatmap.png')
+    log:
+        join(OUT_DIR, 'Logs', 'DeepTools', 'plotHeatmap.genes.log')
+    conda: CONDA_ENV
+    shell:
+        'plotHeatmap -m {input.matrix} -o {output.png}'
+        ' --colorMap viridis --sortRegions descend > {log} 2>&1'
+
+##--------------------------------------------------------------------------------------##
+## DeepTools heatmaps (per-sample, gene-body)
+##--------------------------------------------------------------------------------------##
+
+rule deeptools_computeMatrix_gene_sample:
+    input:
+        bw  = join(OUT_DIR, 'BigWig', '{sample}.bigwig'),
+        bed = join(OUT_DIR, 'reference', 'target', 'genes.bed'),
+    output:
+        matrix = join(OUT_DIR, 'DeepTools', 'per_sample', 'genes', '{sample}.matrix.gz')
+    params:
+        bs     = DT_BIN_SIZE,
+        body   = DT_REGION_BODY,
+        before = DT_BEFORE_REGION,
+        after  = DT_AFTER_REGION,
+    threads: 8
+    resources:
+        mem_mb = 16000
+    log:
+        join(OUT_DIR, 'Logs', 'DeepTools', 'per_sample', '{sample}.computeMatrix.genes.log')
+    conda: CONDA_ENV
+    shell:
+        'computeMatrix scale-regions'
+        ' -S {input.bw} -R {input.bed}'
+        ' -b {params.before} -a {params.after} -m {params.body}'
+        ' --binSize {params.bs} --skipZeros -p {threads}'
+        ' -o {output.matrix} > {log} 2>&1'
+
+rule deeptools_plotHeatmap_gene_sample:
+    input:
+        matrix = join(OUT_DIR, 'DeepTools', 'per_sample', 'genes', '{sample}.matrix.gz')
+    output:
+        png = join(OUT_DIR, 'DeepTools', 'per_sample', 'genes', '{sample}.heatmap.png')
+    log:
+        join(OUT_DIR, 'Logs', 'DeepTools', 'per_sample', '{sample}.plotHeatmap.genes.log')
+    conda: CONDA_ENV
+    shell:
+        'plotHeatmap -m {input.matrix} -o {output.png}'
+        ' --colorMap viridis --sortRegions descend > {log} 2>&1'
+
+##--------------------------------------------------------------------------------------##
+## DeepTools heatmaps (per-sample, peak-centered)
+##--------------------------------------------------------------------------------------##
+
+rule macs3_extract_summits:
+    """Derive a per-sample summit BED from the MACS3 narrowPeak file.
+    Summit position = $2 + $10 (peak offset from start)."""
+    input:
+        peak = join(OUT_DIR, 'MACS3', '{sample}', '{sample}_peaks.narrowPeak')
+    output:
+        summits = join(OUT_DIR, 'MACS3', '{sample}', '{sample}.summits.bed')
+    shell:
+        r'''awk 'BEGIN{{OFS="\t"}} {{s=$2+$10; if (s<0) s=0; print $1,s,s+1,$4,$5,"."}}' {input.peak} '''
+        r'''| sort -k1,1 -k2,2n > {output.summits}'''
+
+rule seacr_extract_summits:
+    """Derive a per-sample summit BED from the SEACR peak file.
+    SEACR col 6 is 'chr:start-end' of the max-signal region; use its midpoint."""
+    input:
+        bed = join(OUT_DIR, 'SEACR', '{sample}', '{sample}.' + SEACR_MODE + '.bed')
+    output:
+        summits = join(OUT_DIR, 'SEACR', '{sample}', '{sample}.summits.bed')
+    shell:
+        r'''awk 'BEGIN{{OFS="\t"}} '''
+        r'''{{n=split($6,a,":"); split(a[2],b,"-"); mid=int((b[1]+b[2])/2); '''
+        r'''print a[1], mid, mid+1, "peak_"NR, $5, "."}}' {input.bed} '''
+        r'''| sort -k1,1 -k2,2n > {output.summits}'''
+
+rule deeptools_computeMatrix_peaks_macs3:
+    input:
+        bw  = join(OUT_DIR, 'BigWig', '{sample}.bigwig'),
+        bed = join(OUT_DIR, 'MACS3', '{sample}', '{sample}.summits.bed'),
+    output:
+        matrix = join(OUT_DIR, 'DeepTools', 'per_sample', 'peaks_macs3', '{sample}.matrix.gz')
+    params:
+        bs     = DT_BIN_SIZE,
+        before = DT_PEAK_BEFORE,
+        after  = DT_PEAK_AFTER,
+    threads: 8
+    resources:
+        mem_mb = 16000
+    log:
+        join(OUT_DIR, 'Logs', 'DeepTools', 'per_sample', '{sample}.computeMatrix.peaks_macs3.log')
+    conda: CONDA_ENV
+    shell:
+        # Skip empty summit BEDs gracefully (no peaks called).
+        'if [ ! -s {input.bed} ]; then'
+        '   echo "No MACS3 summits for {wildcards.sample}; emitting empty matrix." > {log};'
+        '   : | gzip -nc > {output.matrix};'
+        ' else'
+        '   computeMatrix reference-point --referencePoint center'
+        '     -S {input.bw} -R {input.bed}'
+        '     -b {params.before} -a {params.after}'
+        '     --binSize {params.bs} --skipZeros -p {threads}'
+        '     -o {output.matrix} > {log} 2>&1;'
+        ' fi'
+
+rule deeptools_plotHeatmap_peaks_macs3:
+    input:
+        matrix = join(OUT_DIR, 'DeepTools', 'per_sample', 'peaks_macs3', '{sample}.matrix.gz')
+    output:
+        png = join(OUT_DIR, 'DeepTools', 'per_sample', 'peaks_macs3', '{sample}.heatmap.png')
+    log:
+        join(OUT_DIR, 'Logs', 'DeepTools', 'per_sample', '{sample}.plotHeatmap.peaks_macs3.log')
+    conda: CONDA_ENV
+    shell:
+        'if [ ! -s {input.matrix} ]; then'
+        '   echo "Empty MACS3 matrix for {wildcards.sample}; skipping heatmap." > {log};'
+        '   : > {output.png};'
+        ' else'
+        '   plotHeatmap -m {input.matrix} -o {output.png}'
+        '     --colorMap viridis --sortRegions descend'
+        '     --refPointLabel summit > {log} 2>&1;'
+        ' fi'
+
+rule deeptools_computeMatrix_peaks_seacr:
+    input:
+        bw  = join(OUT_DIR, 'BigWig', '{sample}.bigwig'),
+        bed = join(OUT_DIR, 'SEACR', '{sample}', '{sample}.summits.bed'),
+    output:
+        matrix = join(OUT_DIR, 'DeepTools', 'per_sample', 'peaks_seacr', '{sample}.matrix.gz')
+    params:
+        bs     = DT_BIN_SIZE,
+        before = DT_PEAK_BEFORE,
+        after  = DT_PEAK_AFTER,
+    threads: 8
+    resources:
+        mem_mb = 16000
+    log:
+        join(OUT_DIR, 'Logs', 'DeepTools', 'per_sample', '{sample}.computeMatrix.peaks_seacr.log')
+    conda: CONDA_ENV
+    shell:
+        'if [ ! -s {input.bed} ]; then'
+        '   echo "No SEACR summits for {wildcards.sample}; emitting empty matrix." > {log};'
+        '   : | gzip -nc > {output.matrix};'
+        ' else'
+        '   computeMatrix reference-point --referencePoint center'
+        '     -S {input.bw} -R {input.bed}'
+        '     -b {params.before} -a {params.after}'
+        '     --binSize {params.bs} --skipZeros -p {threads}'
+        '     -o {output.matrix} > {log} 2>&1;'
+        ' fi'
+
+rule deeptools_plotHeatmap_peaks_seacr:
+    input:
+        matrix = join(OUT_DIR, 'DeepTools', 'per_sample', 'peaks_seacr', '{sample}.matrix.gz')
+    output:
+        png = join(OUT_DIR, 'DeepTools', 'per_sample', 'peaks_seacr', '{sample}.heatmap.png')
+    log:
+        join(OUT_DIR, 'Logs', 'DeepTools', 'per_sample', '{sample}.plotHeatmap.peaks_seacr.log')
+    conda: CONDA_ENV
+    shell:
+        'if [ ! -s {input.matrix} ]; then'
+        '   echo "Empty SEACR matrix for {wildcards.sample}; skipping heatmap." > {log};'
+        '   : > {output.png};'
+        ' else'
+        '   plotHeatmap -m {input.matrix} -o {output.png}'
+        '     --colorMap viridis --sortRegions descend'
+        '     --refPointLabel summit > {log} 2>&1;'
+        ' fi'
+
+##--------------------------------------------------------------------------------------##
+## DeepTools QC (multiBamSummary + correlation + PCA + fingerprint)
+##--------------------------------------------------------------------------------------##
+
+rule deeptools_multiBamSummary:
+    """Bin-wise read coverage across all (target + control) filtered BAMs."""
+    input:
+        bams = expand(join(OUT_DIR, 'Bowtie2', 'target', '{s}.filt.bam'),     s=ALL_SAMPLES),
+        bais = expand(join(OUT_DIR, 'Bowtie2', 'target', '{s}.filt.bam.bai'), s=ALL_SAMPLES),
+    output:
+        npz = join(OUT_DIR, 'DeepTools', 'qc', 'multiBamSummary.npz')
+    params:
+        bs     = DT_QC_BIN_SIZE,
+        labels = ' '.join(ALL_SAMPLES),
+    threads: 8
+    resources:
+        mem_mb = 16000
+    log:
+        join(OUT_DIR, 'Logs', 'DeepTools', 'multiBamSummary.log')
+    conda: CONDA_ENV
+    shell:
+        'multiBamSummary bins'
+        ' --binSize {params.bs}'
+        ' --bamfiles {input.bams}'
+        ' --labels {params.labels}'
+        ' -p {threads}'
+        ' -o {output.npz} > {log} 2>&1'
+
+rule deeptools_plotCorrelation:
+    input:
+        npz = join(OUT_DIR, 'DeepTools', 'qc', 'multiBamSummary.npz')
+    output:
+        png = join(OUT_DIR, 'DeepTools', 'qc', 'correlation.heatmap.png'),
+        tab = join(OUT_DIR, 'DeepTools', 'qc', 'correlation.matrix.tab'),
+    params:
+        method = DT_QC_CORR_METHOD,
+    log:
+        join(OUT_DIR, 'Logs', 'DeepTools', 'plotCorrelation.log')
+    conda: CONDA_ENV
+    shell:
+        'plotCorrelation'
+        ' --corData {input.npz}'
+        ' --corMethod {params.method}'
+        ' --whatToPlot heatmap'
+        ' --skipZeros --plotNumbers'
+        ' --colorMap viridis'
+        ' -o {output.png}'
+        ' --outFileCorMatrix {output.tab} > {log} 2>&1'
+
+rule deeptools_plotPCA:
+    input:
+        npz = join(OUT_DIR, 'DeepTools', 'qc', 'multiBamSummary.npz')
+    output:
+        png = join(OUT_DIR, 'DeepTools', 'qc', 'pca.png'),
+        tab = join(OUT_DIR, 'DeepTools', 'qc', 'pca.tab'),
+    log:
+        join(OUT_DIR, 'Logs', 'DeepTools', 'plotPCA.log')
+    conda: CONDA_ENV
+    shell:
+        'plotPCA'
+        ' --corData {input.npz}'
+        ' -o {output.png}'
+        ' --outFileNameData {output.tab} > {log} 2>&1'
+
+rule deeptools_plotFingerprint:
+    """Per-sample cumulative-coverage fingerprint (enrichment QC)."""
+    input:
+        bam = join(OUT_DIR, 'Bowtie2', 'target', '{sample}.filt.bam'),
+        bai = join(OUT_DIR, 'Bowtie2', 'target', '{sample}.filt.bam.bai'),
+    output:
+        png = join(OUT_DIR, 'DeepTools', 'qc', 'fingerprint', '{sample}.png'),
+        raw = join(OUT_DIR, 'DeepTools', 'qc', 'fingerprint', '{sample}.raw.tab'),
+        qcm = join(OUT_DIR, 'DeepTools', 'qc', 'fingerprint', '{sample}.qcmetrics.tab'),
+    params:
+        nsamples = DT_FINGERPRINT_SAMPLES,
+        bs       = DT_FINGERPRINT_BINSIZE,
+    threads: 4
+    resources:
+        mem_mb = 8000
+    log:
+        join(OUT_DIR, 'Logs', 'DeepTools', 'fingerprint', '{sample}.log')
+    conda: CONDA_ENV
+    shell:
+        'plotFingerprint'
+        ' -b {input.bam} --labels {wildcards.sample}'
+        ' --numberOfSamples {params.nsamples} --binSize {params.bs}'
+        ' -p {threads}'
+        ' --plotFile {output.png}'
+        ' --outRawCounts {output.raw}'
+        ' --outQualityMetrics {output.qcm} > {log} 2>&1'
+
+##--------------------------------------------------------------------------------------##
+## MultiQC
+##--------------------------------------------------------------------------------------##
+
+def _multiqc_inputs(_wc=None):
+    inputs = []
+    inputs += expand(join(OUT_DIR, 'fastQC', '{s}.R2_fastqc.html'), s=ALL_SAMPLES)
+    inputs += expand(join(OUT_DIR, 'trimmed_reads', '{s}.qc.txt'), s=ALL_SAMPLES)
+    inputs += expand(join(OUT_DIR, 'Logs', 'Bowtie2', '{s}.target.bowtie2.log'), s=ALL_SAMPLES)
+    inputs += expand(join(OUT_DIR, 'Bowtie2', 'target', '{s}.flagstat'), s=ALL_SAMPLES)
+    inputs += expand(join(OUT_DIR, 'Bowtie2', 'target', '{s}.dupmark.metrics'), s=ALL_SAMPLES)
+    inputs += expand(join(OUT_DIR, 'Bowtie2', 'target', '{s}.insert_size_metrics.txt'), s=ALL_SAMPLES)
+    inputs += expand(join(OUT_DIR, 'Bowtie2', 'target', '{s}', 'bamqc', 'qualimapReport.html'), s=ALL_SAMPLES)
+    inputs += expand(join(OUT_DIR, 'MACS3', '{s}', '{s}_peaks.narrowPeak'), s=TARGET_SAMPLES)
+    if USE_SPIKEIN:
+        inputs += expand(join(OUT_DIR, 'Logs', 'Bowtie2', '{s}.spikein.bowtie2.log'), s=ALL_SAMPLES)
+    inputs += [join(OUT_DIR, 'DeepTools', 'genes.heatmap.png')]
+    # DeepTools QC outputs picked up by the MultiQC deeptools module
+    inputs += [
+        join(OUT_DIR, 'DeepTools', 'qc', 'correlation.matrix.tab'),
+        join(OUT_DIR, 'DeepTools', 'qc', 'pca.tab'),
+    ]
+    inputs += expand(join(OUT_DIR, 'DeepTools', 'qc', 'fingerprint', '{s}.qcmetrics.tab'),
+                     s=ALL_SAMPLES)
+    return inputs
+
+rule multiqc:
+    input:
+        _multiqc_inputs
+    output:
+        report = join(OUT_DIR, 'MultiQC', 'multiqc_report.html')
+    log:
+        join(OUT_DIR, 'Logs', 'MultiQC', 'multiqc.log')
+    message:
+        '--- Running MultiQC'
+    conda: CONDA_ENV
+    shell:
+        'multiqc -f -o ' + join(OUT_DIR, 'MultiQC') + ' ' + OUT_DIR + ' > {log} 2>&1'
+
+##--------------------------------------------------------------------------------------##
+## DiffBind: samplesheet + parametrised Jupyter notebook (R kernel)
+##--------------------------------------------------------------------------------------##
+
+def _diffbind_peak_inputs(_wc=None):
+    """Per-replicate peak files the DiffBind samplesheet references — declared
+    so Snakemake builds them before generating the CSV."""
+    if DIFFBIND_PEAKCALLER == 'macs3':
+        return expand(join(OUT_DIR, 'MACS3', '{s}', '{s}_peaks.narrowPeak'),
+                      s=TARGET_SAMPLES)
+    return expand(join(OUT_DIR, 'SEACR', '{s}', '{s}.' + SEACR_MODE + '.bed'),
+                  s=TARGET_SAMPLES)
+
+def _diffbind_control_bams(_wc=None):
+    return [join(OUT_DIR, 'pooled_controls', f'{ct}.pooled.bam')
+            for ct in USED_CONTROL_TYPES]
+
+rule diffbind_samplesheet:
+    input:
+        bams  = expand(join(OUT_DIR, 'Bowtie2', 'target', '{s}.filt.bam'),
+                       s=TARGET_SAMPLES),
+        bais  = expand(join(OUT_DIR, 'Bowtie2', 'target', '{s}.filt.bam.bai'),
+                       s=TARGET_SAMPLES),
+        ctrls = _diffbind_control_bams,
+        peaks = _diffbind_peak_inputs,
+        cfg   = workflow.configfiles[0] if getattr(workflow, 'configfiles', None) else 'config.yml',
+    output:
+        csv = join(OUT_DIR, 'DiffBind', 'samplesheet.csv')
+    params:
+        caller = DIFFBIND_PEAKCALLER,
+        script = 'scripts/build_diffbind_samplesheet.py',
+    log:
+        join(OUT_DIR, 'Logs', 'DiffBind', 'samplesheet.log')
+    message:
+        '--- Building DiffBind samplesheet (peakcaller={params.caller})'
+    conda: CONDA_ENV
+    shell:
+        'python {params.script}'
+        ' --config {input.cfg}'
+        ' --peakcaller {params.caller}'
+        ' --out {output.csv} > {log} 2>&1'
+
+rule diffbind_notebook:
+    """Execute the DiffBind R notebook via papermill, injecting parameters."""
+    input:
+        samplesheet = join(OUT_DIR, 'DiffBind', 'samplesheet.csv'),
+        notebook    = 'notebooks/diffbind_analysis.ipynb',
+    output:
+        nb        = join(OUT_DIR, 'DiffBind', 'diffbind_analysis.executed.ipynb'),
+        html      = join(OUT_DIR, 'DiffBind', 'diffbind_analysis.html'),
+        consensus = join(OUT_DIR, 'DiffBind', 'consensus_peaks.bed'),
+        rds       = join(OUT_DIR, 'DiffBind', 'dba_analysis.rds'),
+    params:
+        outdir        = join(OUT_DIR, 'DiffBind'),
+        min_overlap   = DIFFBIND_MIN_OVERLAP,
+        fdr_threshold = DIFFBIND_FDR_THRESHOLD,
+    threads: 4
+    resources:
+        mem_mb = 16000
+    log:
+        join(OUT_DIR, 'Logs', 'DiffBind', 'notebook.log')
+    benchmark:
+        join(OUT_DIR, 'Benchmarks', 'DiffBind', 'notebook.tsv')
+    message:
+        '--- Running DiffBind notebook (papermill, R kernel)'
+    conda: DIFFBIND_CONDA_ENV
+    shell:
+        # Use $CONDA_PREFIX/bin/* explicitly to dodge ~/.local/bin shims (e.g. a stale
+        # jupyter shim whose shebang points at a deleted env) that win on PATH order.
+        '"$CONDA_PREFIX/bin/papermill" {input.notebook} {output.nb}'
+        ' -p samplesheet_path {input.samplesheet}'
+        ' -p outdir {params.outdir}'
+        ' -p min_overlap {params.min_overlap}'
+        ' -p fdr_threshold {params.fdr_threshold}'
+        ' --kernel ir > {log} 2>&1'
+        # --output sets the basename (no extension); without it nbconvert names the
+        # file after the input stem (…executed.html), which wouldn't match the rule's
+        # declared output and would trigger Snakemake's incomplete-output cleanup.
+        ' && "$CONDA_PREFIX/bin/jupyter" nbconvert --to html'
+        ' --output diffbind_analysis'
+        ' --output-dir {params.outdir} {output.nb} >> {log} 2>&1'

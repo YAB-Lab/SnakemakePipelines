@@ -1,0 +1,28 @@
+name: diffbind
+channels:
+  - conda-forge
+  - bioconda
+  - nodefaults
+dependencies:
+  - python=3.10
+  - pip
+
+  # R + DiffBind stack
+  - r-base=4.3
+  - bioconductor-diffbind
+  - bioconductor-genomicranges
+  - bioconductor-summarizedexperiment
+  - bioconductor-rtracklayer
+  - bioconductor-deseq2
+  - r-tidyverse
+  - r-ggplot2
+  - r-rcolorbrewer
+  - r-pheatmap
+  - r-uuid       # required by IRkernel
+  - r-irkernel
+
+  # Jupyter + parametrised notebook execution
+  - jupyter
+  - nbconvert
+  - papermill
+  - pyyaml
