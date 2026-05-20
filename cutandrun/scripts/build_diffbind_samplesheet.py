@@ -16,14 +16,6 @@ from os.path import join
 import yaml
 
 
-def control_type_for(group, sample_controls):
-    return sample_controls.get(group, 'IgG')
-
-
-def control_samples_for(ctrl_type, igg, panh3):
-    return igg if ctrl_type == 'IgG' else panh3
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--config',     required=True, help='Pipeline config.yml')
@@ -35,12 +27,10 @@ def main():
     with open(args.config) as fh:
         cfg = yaml.safe_load(fh)
 
-    out_dir = cfg['OUT_DIR']
-    groups          = cfg['GROUPS']
-    igg_samples     = list(cfg.get('IGG_SAMPLES', []) or [])
-    panh3_samples   = list(cfg.get('PANH3_SAMPLES', []) or [])
-    sample_controls = dict(cfg.get('SAMPLE_CONTROLS', {}) or {})
-    seacr_mode      = cfg.get('SEACR_MODE', 'stringent')
+    out_dir    = cfg['OUT_DIR']
+    groups     = cfg['GROUPS']
+    controls   = {g: list(reps or []) for g, reps in (cfg.get('CONTROLS', {}) or {}).items()}
+    seacr_mode = cfg.get('SEACR_MODE', 'stringent')
 
     caller = (args.peakcaller or cfg.get('DIFFBIND_PEAKCALLER', 'macs3')).lower()
     if caller not in ('macs3', 'seacr'):
@@ -55,11 +45,10 @@ def main():
 
     rows = []
     for group, replicates in groups.items():
-        ctrl_type    = control_type_for(group, sample_controls)
-        ctrl_pool    = control_samples_for(ctrl_type, igg_samples, panh3_samples)
+        ctrl_pool    = controls.get(group, [])
         has_ctrl     = bool(ctrl_pool)
-        control_id   = f'{ctrl_type}_pool' if has_ctrl else ''
-        control_bam  = join(out_dir, 'pooled_controls', f'{ctrl_type}.pooled.bam') if has_ctrl else ''
+        control_id   = f'{group}_ctrl' if has_ctrl else ''
+        control_bam  = join(out_dir, 'pooled_controls', f'{group}.pooled.bam') if has_ctrl else ''
 
         for replicate_idx, sample in enumerate(replicates, start=1):
             rows.append({

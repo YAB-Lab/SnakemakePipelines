@@ -29,10 +29,8 @@ USE_SPIKEIN            = bool(config.get('USE_SPIKEIN', False))
 SPIKEIN_FASTA          = config.get('SPIKEIN_FASTA', '')
 SPIKEIN_SCALE_CONSTANT = int(config.get('SPIKEIN_SCALE_CONSTANT', 10000))
 
-GROUPS          = config['GROUPS']
-IGG_SAMPLES     = list(config.get('IGG_SAMPLES', []) or [])
-PANH3_SAMPLES   = list(config.get('PANH3_SAMPLES', []) or [])
-SAMPLE_CONTROLS = dict(config.get('SAMPLE_CONTROLS', {}) or {})
+GROUPS   = config['GROUPS']
+CONTROLS = {g: list(reps or []) for g, reps in (config.get('CONTROLS', {}) or {}).items()}
 
 CUTADAPT_ADAPTERS = config['CUTADAPT_ADAPTERS']
 CUTADAPT_EXTRA    = config['CUTADAPT_EXTRA']
@@ -74,43 +72,33 @@ FILES = json.load(open(config['PE_SAMPLES_JSON']))
 
 
 TARGET_SAMPLES  = sorted({s for reps in GROUPS.values() for s in reps})
-CONTROL_SAMPLES = sorted(set(IGG_SAMPLES) | set(PANH3_SAMPLES))
+CONTROL_SAMPLES = sorted({s for reps in CONTROLS.values() for s in reps})
 ALL_SAMPLES     = sorted(set(TARGET_SAMPLES) | set(CONTROL_SAMPLES))
 
 # ---- Validate config ----
 for s in ALL_SAMPLES:
     if s not in FILES:
         raise ValueError(f"Sample '{s}' referenced in config but missing from PE_SAMPLES_JSON")
-for grp, ct in SAMPLE_CONTROLS.items():
-    if ct not in ('IgG', 'panH3'):
-        raise ValueError(f"SAMPLE_CONTROLS[{grp}] = '{ct}' invalid; must be 'IgG' or 'panH3'")
+for grp in CONTROLS:
     if grp not in GROUPS:
-        raise ValueError(f"SAMPLE_CONTROLS references unknown group '{grp}'")
+        raise ValueError(f"CONTROLS references unknown group '{grp}' (not in GROUPS)")
 
-def control_type_for(group):
-    return SAMPLE_CONTROLS.get(group, 'IgG')
+# Groups that actually have a control assigned (non-empty replicate list)
+GROUPS_WITH_CONTROL = [g for g in GROUPS if CONTROLS.get(g)]
 
-def control_samples_for(ctrl_type):
-    return IGG_SAMPLES if ctrl_type == 'IgG' else PANH3_SAMPLES
+def control_samples_for(group):
+    return CONTROLS.get(group, [])
 
-# Distinct control types actually used (so we only pool what we need)
-USED_CONTROL_TYPES = sorted({control_type_for(g) for g in GROUPS} &
-                            {'IgG', 'panH3'})
-# Drop control types whose sample list is empty
-USED_CONTROL_TYPES = [ct for ct in USED_CONTROL_TYPES if control_samples_for(ct)]
-
-# Map target group -> assigned control pool BAM / bedGraph (or '' if none)
+# Map target group -> assigned per-group pooled control BAM / bedGraph (or '' if none)
 def control_bam_for(group):
-    ct = control_type_for(group)
-    if not control_samples_for(ct):
+    if not control_samples_for(group):
         return ''
-    return join(OUT_DIR, 'pooled_controls', f'{ct}.pooled.bam')
+    return join(OUT_DIR, 'pooled_controls', f'{group}.pooled.bam')
 
 def control_bedgraph_for(group):
-    ct = control_type_for(group)
-    if not control_samples_for(ct):
+    if not control_samples_for(group):
         return ''
-    return join(OUT_DIR, 'pooled_controls', f'{ct}.pooled.bedgraph')
+    return join(OUT_DIR, 'pooled_controls', f'{group}.pooled.bedgraph')
 
 def group_of(sample):
     """Return the target group that owns this sample (KeyError if not a target)."""
@@ -511,15 +499,15 @@ rule bedgraph_to_bigwig:
 rule pool_control_bam:
     input:
         bams = lambda wc: expand(join(OUT_DIR, 'Bowtie2', 'target', '{s}.filt.bam'),
-                                 s=control_samples_for(wc.ctrl_type))
+                                 s=control_samples_for(wc.group))
     output:
-        bam = join(OUT_DIR, 'pooled_controls', '{ctrl_type}.pooled.bam'),
-        bai = join(OUT_DIR, 'pooled_controls', '{ctrl_type}.pooled.bam.bai'),
+        bam = join(OUT_DIR, 'pooled_controls', '{group}.pooled.bam'),
+        bai = join(OUT_DIR, 'pooled_controls', '{group}.pooled.bam.bai'),
     threads: 4
     resources:
         mem_mb = 8000
     message:
-        '--- Pooling control BAMs for type "{wildcards.ctrl_type}"'
+        '--- Pooling control BAMs for group "{wildcards.group}"'
     conda: CONDA_ENV
     shell:
         'samtools merge -@ {threads} -f {output.bam} {input.bams}'
@@ -528,11 +516,11 @@ rule pool_control_bam:
 rule pool_control_bedgraph:
     input:
         bgs = lambda wc: expand(join(OUT_DIR, 'BedGraph', '{s}.bedgraph'),
-                                s=control_samples_for(wc.ctrl_type))
+                                s=control_samples_for(wc.group))
     output:
-        bg = join(OUT_DIR, 'pooled_controls', '{ctrl_type}.pooled.bedgraph')
+        bg = join(OUT_DIR, 'pooled_controls', '{group}.pooled.bedgraph')
     message:
-        '--- Pooling control bedGraphs for type "{wildcards.ctrl_type}" (mean across reps)'
+        '--- Pooling control bedGraphs for group "{wildcards.group}" (mean across reps)'
     conda: CONDA_ENV
     shell:
         # Union of all positions, then mean over reps (-na 0 to count missing as 0).
@@ -1078,8 +1066,8 @@ def _diffbind_peak_inputs(_wc=None):
                   s=TARGET_SAMPLES)
 
 def _diffbind_control_bams(_wc=None):
-    return [join(OUT_DIR, 'pooled_controls', f'{ct}.pooled.bam')
-            for ct in USED_CONTROL_TYPES]
+    return [join(OUT_DIR, 'pooled_controls', f'{g}.pooled.bam')
+            for g in GROUPS_WITH_CONTROL]
 
 rule diffbind_samplesheet:
     input:

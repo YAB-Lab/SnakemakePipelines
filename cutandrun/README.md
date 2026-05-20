@@ -15,10 +15,10 @@ notebook in `notebooks/`.
 4. Optional **Bowtie2** alignment to a spike-in genome (*E. coli* K12 carryover) → per-sample scale factor
 5. **Qualimap** BAMQC + samtools flagstat / idxstats
 6. Read filtering (`-F 1804 -f 2`, MAPQ ≥ `MIN_MAPQ`, optional blacklist subtraction)
-7. **Picard MarkDuplicates** — duplicates removed for control samples (IgG / panH3); kept for targets by default
+7. **Picard MarkDuplicates** — duplicates removed for control samples; kept for targets by default
 8. **Picard CollectInsertSizeMetrics** (fragment-length distribution)
 9. BAM → **bedGraph** → **bigWig** (spike-in scaled if enabled, otherwise CPM)
-10. Pool all replicates of each control type → single pooled control BAM + mean bedGraph
+10. Per-group control pooling — for each target group's CONTROLS list, merge replicate BAMs + average bedGraph
 11. **MACS3** narrowPeak calling per target replicate (with assigned pooled control)
 12. **SEACR** peak calling per target replicate (with assigned pooled bedGraph, or threshold mode)
 13. Naive-overlap **consensus peaks** per target group, for both callers
@@ -92,7 +92,7 @@ listing multiple files (concatenated implicitly by Bowtie2).
 | Reference                | `DNA`, `GTF`, `MITO_ID`, `BLACKLIST`                                                                                       | absolute paths; `BLACKLIST: ''` to skip                                                        |
 | Spike-in                 | `USE_SPIKEIN`, `SPIKEIN_FASTA`, `SPIKEIN_SCALE_CONSTANT`                                                                   | scale = constant / spike-in-mapped reads                                                       |
 | IO                       | `OUT_DIR`, `PE_SAMPLES_JSON`                                                                                               | output dir is created if missing                                                               |
-| Sample grouping          | `GROUPS`, `IGG_SAMPLES`, `PANH3_SAMPLES`, `SAMPLE_CONTROLS`                                                                | see [Controls](#controls)                                                                       |
+| Sample grouping          | `GROUPS`, `CONTROLS`                                                                                                       | see [Controls](#controls)                                                                       |
 | Trimming                 | `CUTADAPT_ADAPTERS`, `CUTADAPT_EXTRA`                                                                                      | defaults cover Nextera (Tn5) + TruSeq                                                          |
 | Alignment                | `BOWTIE2_TARGET_PARAMS`, `BOWTIE2_SPIKEIN_PARAMS`                                                                          | Henikoff-lab defaults                                                                          |
 | Filtering                | `MIN_MAPQ`, `REMOVE_DUPS_TARGETS`                                                                                          | controls always dedup'd; targets opt-in                                                        |
@@ -104,14 +104,26 @@ listing multiple files (concatenated implicitly by Bowtie2).
 
 ## Controls
 
-- `IGG_SAMPLES` — IgG replicate IDs (default control for all target groups).
-- `PANH3_SAMPLES` — optional panH3 replicate IDs.
-- `SAMPLE_CONTROLS` — per-target-group override of which control type to use
-  (`IgG` or `panH3`). Groups not listed default to `IgG`.
+`CONTROLS` is a dict keyed by `GROUPS` name. Each entry lists the control
+replicate IDs (must exist in `PE_SAMPLES_JSON`) that serve as that group's
+control:
 
-All replicates of a given control type are pooled (merged BAM + mean
-bedGraph) and the pool is used as the control for MACS3 / SEACR peak calling
-and for the DiffBind `bamControl` column.
+```yaml
+CONTROLS:
+  cond_1: [FL2]            # single rep — reused across all cond_1 target reps
+  cond_2: [FL6, FL24]      # matched count — pooled into one cond_2 control
+  cond_3: [FL10, FL28]
+```
+
+For each listed group, the replicates are pooled (merged BAM + mean
+bedGraph) into a per-group control track at
+`pooled_controls/<group>.pooled.{bam,bedgraph}` and used as the MACS3 / SEACR
+control and the DiffBind `bamControl` for *that* group only. Sharing IgGs
+across groups is fine — just list the same replicate ID under multiple
+groups.
+
+Groups omitted from `CONTROLS` (or with an empty list) run with no control:
+MACS3 in no-control mode, SEACR falling back to `SEACR_THRESHOLD`.
 
 ## Outputs
 
@@ -129,7 +141,7 @@ OUTPUT/
 │   │                                # *.dupmark.metrics, *.insert_size_metrics.txt, *.insert_size_histogram.pdf,
 │   │                                # <sample>/bamqc/ (Qualimap)
 │   └── spikein/                     # only when USE_SPIKEIN=true
-├── pooled_controls/                 # <ctrl_type>.pooled.bam, <ctrl_type>.pooled.bedgraph
+├── pooled_controls/                 # <group>.pooled.bam, <group>.pooled.bedgraph (one per group with controls)
 ├── BedGraph/                        # per-sample bedGraph (CPM or spike-in scaled)
 ├── BigWig/                          # per-sample bigWig (for IGV / heatmaps)
 ├── MACS3/
@@ -173,7 +185,7 @@ conda activate snakemake
 # 1) Build the samples JSON from a folder of *.R1.fastq.gz / *.R2.fastq.gz
 python scripts/make_json_samples.py /path/to/fastqs -o samples_pe.json
 
-# 2) Edit config.yml — at minimum: DNA, GTF, OUT_DIR, PE_SAMPLES_JSON, GROUPS, IGG_SAMPLES
+# 2) Edit config.yml — at minimum: DNA, GTF, OUT_DIR, PE_SAMPLES_JSON, GROUPS, CONTROLS
 
 # 3) Dry run to verify the rule graph
 snakemake -n --use-conda
