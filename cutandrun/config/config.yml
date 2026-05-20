@@ -33,23 +33,22 @@ GROUPS:
     - FL30
 
 # ---- Controls ----
-# IgG is the default control for every target group unless overridden in
-# SAMPLE_CONTROLS below. List replicate IDs (must also be present in
-# PE_SAMPLES_JSON). All listed replicates of a control type are pooled into
-# a single control track used for peak calling.
-IGG_SAMPLES:
-  - FL2
-  - FL20
-
-# Optional second control type. Leave empty if not used.
-PANH3_SAMPLES: []
-#   - panh3_rep1
-#   - panh3_rep2
-
-# Per-target-group control assignment. Any group not listed here uses 'IgG'.
-# Valid values: 'IgG' or 'panH3'.
-SAMPLE_CONTROLS: {}
-#   h3k9me3: panH3
+# Per-target-group control replicates. Each entry maps a GROUPS key to the
+# list of control replicate IDs (must exist in PE_SAMPLES_JSON) that serve
+# as that group's control. Replicates are pooled (merged BAM + mean bedGraph)
+# into a single per-group control track used by MACS3 / SEACR and DiffBind.
+# A single-replicate list is fine (it just gets reused for every target rep).
+# Groups omitted here run with no control: MACS3 in no-control mode, SEACR
+# falling back to SEACR_THRESHOLD. The same replicate ID may appear under
+# multiple groups if you want to share an IgG.
+CONTROLS:
+  cond_1:
+    - FL2
+  cond_2:
+    - FL20
+  cond_3:
+    - FL2
+    - FL20
 
 # ---- Trimming ----
 # CUT&RUN reads frequently contain Nextera (Tn5) AND TruSeq adapter sequences.
