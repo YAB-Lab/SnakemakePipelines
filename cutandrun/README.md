@@ -1,4 +1,4 @@
-# YabLab CUT&RUN Snakemake pipeline
+# CUT&RUN Snakemake pipeline
 
 A Snakemake port of nf-core/cutandrun, structured the same way as the lab's
 ATAC-Seq pipeline: a single `Snakefile`, all changeable inputs in
